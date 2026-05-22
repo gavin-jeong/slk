@@ -232,6 +232,10 @@ type (
 		DisplayName string
 		IsBot       bool
 	}
+	WorkspaceUserNamesUpdatedMsg struct {
+		TeamID    string
+		UserNames map[string]string
+	}
 	// UserExternalMsg flags a single user as external (Slack Connect /
 	// shared-channel guest). Emitted by the user-resolution path when a
 	// users.info response shows team_id != workspace TeamID. The App
@@ -374,7 +378,8 @@ type (
 	// ToastMsg sets a transient string in the status bar's toast slot. Used
 	// for short error notices (e.g. failed status change). Auto-clears after
 	// 3 seconds via a CopiedClearMsg tick scheduled by the App.
-	ToastMsg struct{ Text string }
+	ToastMsg                struct{ Text string }
+	SlashCommandExecutedMsg struct{ Text string }
 )
 
 type loadingEntry struct {
@@ -2368,6 +2373,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// in-history name patch. IsBot is carried for forward
 		// compatibility but not consumed here.
 
+	case WorkspaceUserNamesUpdatedMsg:
+		if msg.TeamID != a.activeTeamID {
+			break
+		}
+		a.SetUserNames(msg.UserNames)
+		return a, nil
+
 	case UserExternalMsg:
 		if a.externalUsers == nil {
 			a.externalUsers = map[string]bool{}
@@ -2558,6 +2570,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.SetExternalUsers(msg.ExternalUsers)
 			a.SetUserNames(msg.UserNames)
 			a.SetCustomEmoji(msg.CustomEmoji)
+			a.SetSlashCommands(msg.SlashCommands)
 			a.currentUserID = msg.UserID
 			a.activeTeamID = msg.TeamID
 			if st, ok := a.statusByTeam[a.activeTeamID]; ok {
@@ -2699,6 +2712,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// from a DND'd workspace). Stop the chain.
 			a.dndTickerOn = false
 		}
+
+	case SlashCommandExecutedMsg:
+		a.learnSlashCommand(msg.Text)
+		a.statusbar.SetToast("Command sent")
+		cmds = append(cmds, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return statusbar.CopiedClearMsg{}
+		}))
 
 	case ToastMsg:
 		a.statusbar.SetToast(msg.Text)
@@ -3267,6 +3287,14 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 				threadTS := a.threadPanel.ThreadTS()
 				channelID := a.threadPanel.ChannelID()
 				a.exitInsertAfterSend()
+				if isSlashCommandText(text) {
+					return func() tea.Msg {
+						return SlashCommandMsg{
+							ChannelID: channelID,
+							Text:      text,
+						}
+					}
+				}
 				return func() tea.Msg {
 					return SendThreadReplyMsg{
 						ChannelID: channelID,
@@ -6315,6 +6343,32 @@ func resolveFilePath(text string) (string, bool) {
 func isSlashCommandText(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	return strings.HasPrefix(trimmed, "/") && len(trimmed) > 1
+}
+
+func (a *App) learnSlashCommand(text string) {
+	trimmed := strings.TrimSpace(text)
+	if !isSlashCommandText(trimmed) {
+		return
+	}
+	name := trimmed
+	if i := strings.IndexAny(trimmed, " \t\n"); i >= 0 {
+		name = trimmed[:i]
+	}
+	if name == "" {
+		return
+	}
+
+	existing := a.compose.SlashCommands()
+	for _, cmd := range existing {
+		if cmd.Name == name {
+			return
+		}
+	}
+
+	updated := make([]slashpicker.Command, 0, len(existing)+1)
+	updated = append(updated, slashpicker.Command{Name: name})
+	updated = append(updated, existing...)
+	a.SetSlashCommands(updated)
 }
 
 func isCtrlV(msg tea.KeyMsg) bool {

@@ -1029,6 +1029,10 @@ func (m *Model) SetSlashCommands(commands []slashpicker.Command) {
 	m.dirty()
 }
 
+func (m Model) SlashCommands() []slashpicker.Command {
+	return append([]slashpicker.Command(nil), m.commands...)
+}
+
 func (m Model) IsSlashActive() bool { return m.slashActive }
 
 func (m *Model) CloseSlash() {

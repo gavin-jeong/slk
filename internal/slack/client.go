@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -529,6 +530,9 @@ type SlashCommand struct {
 	Command     string
 	Description string
 	UsageHint   string
+	Type        string
+	AppID       string
+	AppName     string
 }
 
 // GetHistorySince fetches all messages newer than `oldest` for the
@@ -654,11 +658,21 @@ func (c *Client) ExecuteSlashCommand(ctx context.Context, channelID, text string
 		return fmt.Errorf("executing slash command: invalid command")
 	}
 
-	body, err := c.postForm(ctx, "chat.command", url.Values{
+	form := url.Values{
 		"channel": {channelID},
 		"command": {command},
 		"text":    {args},
-	})
+	}
+	if meta, err := c.lookupSlashCommand(ctx, command); err == nil {
+		if meta.AppID != "" {
+			form.Set("app", meta.AppID)
+		}
+		if meta.Type != "" {
+			form.Set("type", meta.Type)
+		}
+	}
+
+	body, err := c.postForm(ctx, "chat.command", form)
 	if err != nil {
 		return fmt.Errorf("executing slash command: %w", err)
 	}
@@ -677,6 +691,19 @@ func (c *Client) ExecuteSlashCommand(ctx context.Context, channelID, text string
 		return fmt.Errorf("chat.command: %s", resp.Error)
 	}
 	return nil
+}
+
+func (c *Client) lookupSlashCommand(ctx context.Context, command string) (SlashCommand, error) {
+	commands, err := c.ListSlashCommands(ctx)
+	if err != nil {
+		return SlashCommand{}, err
+	}
+	for _, item := range commands {
+		if item.Command == command {
+			return item, nil
+		}
+	}
+	return SlashCommand{}, fmt.Errorf("command not found")
 }
 
 func splitSlashCommand(text string) (command, args string, ok bool) {
@@ -702,16 +729,10 @@ func (c *Client) ListSlashCommands(ctx context.Context) ([]SlashCommand, error) 
 	}
 
 	var resp struct {
-		OK       bool   `json:"ok"`
-		Error    string `json:"error"`
-		Commands []struct {
-			Command     string `json:"command"`
-			Name        string `json:"name"`
-			Description string `json:"description"`
-			UsageHint   string `json:"usage_hint"`
-			ArgHint     string `json:"arg_hint"`
-			Hint        string `json:"hint"`
-		} `json:"commands"`
+		OK       bool                       `json:"ok"`
+		Error    string                     `json:"error"`
+		Commands map[string]json.RawMessage `json:"commands"`
+		CacheTS  json.RawMessage            `json:"cache_ts"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("parsing commands.list response: %w (body=%q)", err, truncateForLog(body))
@@ -723,28 +744,62 @@ func (c *Client) ListSlashCommands(ctx context.Context) ([]SlashCommand, error) 
 		return nil, fmt.Errorf("commands.list: %s", resp.Error)
 	}
 
+	type commandEntry struct {
+		Command     string `json:"command"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		UsageHint   string `json:"usage_hint"`
+		ArgHint     string `json:"arg_hint"`
+		Hint        string `json:"hint"`
+		Desc        string `json:"desc"`
+		Usage       string `json:"usage"`
+		Type        string `json:"type"`
+		AppID       string `json:"app"`
+		AppName     string `json:"app_name"`
+	}
+
 	commands := make([]SlashCommand, 0, len(resp.Commands))
-	for _, cmd := range resp.Commands {
-		name := cmd.Command
+	for key, raw := range resp.Commands {
+		entry := commandEntry{}
+		if len(raw) > 0 && string(raw) != "null" {
+			if err := json.Unmarshal(raw, &entry); err != nil {
+				entry.Command = key
+			}
+		}
+		name := entry.Command
 		if name == "" {
-			name = cmd.Name
+			name = entry.Name
+		}
+		if name == "" {
+			name = key
 		}
 		if name == "" {
 			continue
 		}
-		hint := cmd.UsageHint
+		hint := entry.UsageHint
 		if hint == "" {
-			hint = cmd.ArgHint
+			hint = entry.ArgHint
 		}
 		if hint == "" {
-			hint = cmd.Hint
+			hint = entry.Hint
+		}
+		if hint == "" {
+			hint = entry.Usage
+		}
+		description := entry.Description
+		if description == "" {
+			description = entry.Desc
 		}
 		commands = append(commands, SlashCommand{
 			Command:     name,
-			Description: cmd.Description,
+			Description: description,
 			UsageHint:   hint,
+			Type:        entry.Type,
+			AppID:       entry.AppID,
+			AppName:     entry.AppName,
 		})
 	}
+	sort.Slice(commands, func(i, j int) bool { return commands[i].Command < commands[j].Command })
 	return commands, nil
 }
 
