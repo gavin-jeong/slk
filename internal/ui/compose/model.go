@@ -92,6 +92,10 @@ type Model struct {
 	// successful submit; preserved on failure for retry.
 	pending []PendingAttachment
 
+	// selectedAttachment is the selected pending attachment chip. -1 means
+	// no chip is selected.
+	selectedAttachment int
+
 	// uploading is true while attachments are mid-upload. Causes the
 	// chip row to render in muted style and the Update() to refuse
 	// Esc / Backspace-clear.
@@ -173,8 +177,9 @@ func New(channelName string) Model {
 	ta.SetStyles(s)
 
 	return Model{
-		input:       ta,
-		channelName: channelName,
+		input:              ta,
+		channelName:        channelName,
+		selectedAttachment: -1,
 	}
 }
 
@@ -247,16 +252,86 @@ func (m *Model) AddAttachment(a PendingAttachment) {
 	m.dirty()
 }
 
+// RemoveAttachment removes the pending attachment at index and returns it.
+func (m *Model) RemoveAttachment(index int) (PendingAttachment, bool) {
+	if index < 0 || index >= len(m.pending) || m.uploading {
+		return PendingAttachment{}, false
+	}
+	removed := m.pending[index]
+	m.pending = append(m.pending[:index], m.pending[index+1:]...)
+	m.clampAttachmentSelection()
+	m.dirty()
+	return removed, true
+}
+
+// RemoveSelectedAttachment removes the selected pending attachment and returns it.
+func (m *Model) RemoveSelectedAttachment() (PendingAttachment, bool) {
+	if m.selectedAttachment < 0 {
+		return PendingAttachment{}, false
+	}
+	return m.RemoveAttachment(m.selectedAttachment)
+}
+
 // RemoveLastAttachment removes the most-recently-added pending
 // attachment and returns it. Returns ok=false if pending is empty.
 func (m *Model) RemoveLastAttachment() (PendingAttachment, bool) {
-	if len(m.pending) == 0 {
-		return PendingAttachment{}, false
+	return m.RemoveAttachment(len(m.pending) - 1)
+}
+
+// HasAttachments reports whether there are pending attachments.
+func (m *Model) HasAttachments() bool { return len(m.pending) > 0 }
+
+// SelectedAttachmentIndex returns the selected pending attachment index, or -1.
+func (m *Model) SelectedAttachmentIndex() int { return m.selectedAttachment }
+
+// SelectPrevAttachment selects the previous pending attachment chip.
+func (m *Model) SelectPrevAttachment() bool {
+	if len(m.pending) == 0 || m.uploading {
+		return false
 	}
-	last := m.pending[len(m.pending)-1]
-	m.pending = m.pending[:len(m.pending)-1]
+	if m.selectedAttachment < 0 || m.selectedAttachment >= len(m.pending) {
+		m.selectedAttachment = len(m.pending) - 1
+	} else if m.selectedAttachment > 0 {
+		m.selectedAttachment--
+	}
 	m.dirty()
-	return last, true
+	return true
+}
+
+// SelectNextAttachment selects the next pending attachment chip.
+func (m *Model) SelectNextAttachment() bool {
+	if len(m.pending) == 0 || m.uploading {
+		return false
+	}
+	if m.selectedAttachment < 0 || m.selectedAttachment >= len(m.pending) {
+		m.selectedAttachment = 0
+	} else if m.selectedAttachment < len(m.pending)-1 {
+		m.selectedAttachment++
+	}
+	m.dirty()
+	return true
+}
+
+// ClearAttachmentSelection clears any selected pending attachment chip.
+func (m *Model) ClearAttachmentSelection() {
+	if m.selectedAttachment == -1 {
+		return
+	}
+	m.selectedAttachment = -1
+	m.dirty()
+}
+
+func (m *Model) clampAttachmentSelection() {
+	if len(m.pending) == 0 {
+		m.selectedAttachment = -1
+		return
+	}
+	if m.selectedAttachment >= len(m.pending) {
+		m.selectedAttachment = len(m.pending) - 1
+	}
+	if m.selectedAttachment < -1 {
+		m.selectedAttachment = -1
+	}
 }
 
 // Attachments returns a copy of the current pending attachments.
@@ -275,6 +350,7 @@ func (m *Model) ClearAttachments() {
 		return
 	}
 	m.pending = nil
+	m.selectedAttachment = -1
 	m.dirty()
 }
 
@@ -284,8 +360,11 @@ func (m *Model) SetUploading(on bool) {
 	if m.uploading == on {
 		return
 	}
-	m.uploading = on
-	m.dirty()
+		m.uploading = on
+		if on {
+			m.selectedAttachment = -1
+		}
+		m.dirty()
 }
 
 // Uploading reports whether an upload is currently in flight.
@@ -334,6 +413,7 @@ func (m *Model) Reset() {
 	m.slashActive = false
 	m.slashPicker.Close()
 	m.pending = nil
+	m.selectedAttachment = -1
 	m.uploading = false
 	m.dirty()
 }
@@ -1307,17 +1387,25 @@ func (m Model) renderChips(width int) string {
 		Foreground(fg).
 		Padding(0, 1).
 		MarginRight(1)
+	selectedChipStyle := chipStyle.
+		Background(styles.Primary).
+		Foreground(styles.Background).
+		Bold(true)
 
 	const maxNameLen = 32
 	var rendered []string
-	for _, p := range m.pending {
+	for i, p := range m.pending {
 		name := p.Filename
 		runes := []rune(name)
 		if len(runes) > maxNameLen {
 			name = string(runes[:maxNameLen-1]) + "…"
 		}
 		label := fmt.Sprintf("📎 %s %s", name, formatChipSize(p.Size))
-		rendered = append(rendered, chipStyle.Render(label))
+		style := chipStyle
+		if !m.uploading && i == m.selectedAttachment {
+			style = selectedChipStyle
+		}
+		rendered = append(rendered, style.Render(label))
 	}
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, rendered...)

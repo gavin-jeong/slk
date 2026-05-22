@@ -481,6 +481,69 @@ func TestAppViewRendersSlashPicker(t *testing.T) {
 	}
 }
 
+func TestHandleInsertMode_ShiftReturnInsertsNewline(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.Focus()
+	app.compose.SetValue("hello")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyReturn, Mod: tea.ModShift})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(SendMessageMsg); ok {
+				t.Fatalf("Shift+Return should not send the message")
+			}
+		}
+	}
+	if !strings.Contains(app.compose.Value(), "\n") {
+		t.Fatalf("expected newline in compose value, got %q", app.compose.Value())
+	}
+}
+
+func TestHandleInsertMode_AltEnterInsertsNewline(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.Focus()
+	app.compose.SetValue("hello")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(SendMessageMsg); ok {
+				t.Fatalf("Alt+Enter should not send the message")
+			}
+		}
+	}
+	if !strings.Contains(app.compose.Value(), "\n") {
+		t.Fatalf("expected newline in compose value, got %q", app.compose.Value())
+	}
+}
+
+func TestHandleInsertMode_BackslashEnterInsertsNewline(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.Focus()
+	app.compose.SetValue("hello\\")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(SendMessageMsg); ok {
+				t.Fatalf("backslash+Enter should not send the message")
+			}
+		}
+	}
+	if !strings.Contains(app.compose.Value(), "\n") {
+		t.Fatalf("expected newline in compose value, got %q", app.compose.Value())
+	}
+}
+
 // TestHandleInsertMode_PlainEnterReturnsToNormalMode locks in the
 // vim-style UX: hitting Enter to submit a channel message drops the
 // user back to ModeNormal instead of leaving them in insert mode.
@@ -904,6 +967,53 @@ func TestApp_ChannelFinderThreadsRowActivatesThreadsView(t *testing.T) {
 	}
 }
 
+func TestApp_ChannelFinderActivityRowActivatesActivityView(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+	app.channelFinder.Open()
+	app.SetMode(ModeChannelFinder)
+	_ = app.handleChannelFinderMode(tea.KeyPressMsg{Code: tea.KeyDown})
+	cmd := app.handleChannelFinderMode(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from selecting the Activity row, got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(ActivityViewActivatedMsg); !ok {
+		t.Errorf("Enter on synthetic Activity row dispatched %T, want ActivityViewActivatedMsg", msg)
+	}
+}
+
+func TestApp_ActivityViewActivationAndLoad(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+	_, _ = app.Update(ActivityViewActivatedMsg{})
+	if app.view != ViewActivity {
+		t.Fatalf("after activation view = %v, want ViewActivity", app.view)
+	}
+	items := []cache.ActivityItem{{Kind: "mention", ChannelID: "C1", TS: "1.0", Text: "hey", Unread: true}}
+	_, _ = app.Update(ActivityListLoadedMsg{TeamID: "T1", Items: items})
+	if app.sidebar.ActivityUnreadCount() != 1 {
+		t.Fatalf("ActivityUnreadCount = %d, want 1", app.sidebar.ActivityUnreadCount())
+	}
+}
+
+func TestApp_HandleEnterOnActivityRowActivatesView(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+	app.sidebar.SelectActivityRow()
+	if !app.sidebar.IsActivitySelected() {
+		t.Fatalf("precondition: sidebar should select Activity row")
+	}
+	cmd := app.handleEnter()
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd, got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(ActivityViewActivatedMsg); !ok {
+		t.Errorf("expected ActivityViewActivatedMsg, got %T", msg)
+	}
+}
+
 func TestAppViewRequestsKeyboardEnhancementsForIME(t *testing.T) {
 	app := NewApp()
 	app.width = 100
@@ -1023,6 +1133,7 @@ func TestAppInsertModeDoesNotSuppressKoreanTypingWithoutTransition(t *testing.T)
 	app.handleInsertMode(tea.KeyPressMsg{Code: 'ㅎ', Text: "ㅎ"})
 	if got := app.compose.Value(); got != "ㅎ" {
 		t.Fatalf("Korean text inserted %q, want ㅎ", got)
+
 	}
 }
 
@@ -2544,6 +2655,64 @@ func TestUploadResultMsg_FailureKeepsAttachments(t *testing.T) {
 	}
 	if app.compose.Value() != "caption" {
 		t.Errorf("expected caption preserved, got %q", app.compose.Value())
+	}
+}
+
+func TestOpenFilePickerFromInsertMode(t *testing.T) {
+	app := NewApp()
+	app.SetMode(ModeInsert)
+	app.focusedPanel = PanelMessages
+	_ = app.compose.Focus()
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
+
+	if app.mode != ModeFilePicker {
+		t.Fatalf("expected ModeFilePicker, got %v", app.mode)
+	}
+	if !app.filePicker.IsVisible() {
+		t.Fatal("expected file picker visible")
+	}
+}
+
+func TestAttachFileToActiveComposeAddsPendingAttachment(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "doc.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.focusedPanel = PanelMessages
+
+	cmd := app.attachFileToActiveCompose(path)
+	if cmd == nil {
+		t.Fatal("expected toast cmd")
+	}
+	atts := app.compose.Attachments()
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(atts))
+	}
+	if atts[0].Path != path {
+		t.Fatalf("expected path %q, got %q", path, atts[0].Path)
+	}
+}
+
+func TestHandleInsertMode_RemoveSelectedAttachment(t *testing.T) {
+	app := NewApp()
+	app.SetMode(ModeInsert)
+	app.focusedPanel = PanelMessages
+	_ = app.compose.Focus()
+	app.compose.AddAttachment(compose.PendingAttachment{Filename: "a.png", Size: 1})
+	app.compose.AddAttachment(compose.PendingAttachment{Filename: "b.png", Size: 2})
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
+	app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyDelete})
+
+	atts := app.compose.Attachments()
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment after delete, got %d", len(atts))
+	}
+	if atts[0].Filename != "b.png" {
+		t.Fatalf("expected b.png to remain, got %q", atts[0].Filename)
 	}
 }
 

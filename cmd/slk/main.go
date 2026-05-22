@@ -1127,6 +1127,7 @@ func run() error {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 
+				params := make([]slack.UploadFileParameters, 0, len(attachments))
 				for i, att := range attachments {
 					p.Send(ui.UploadProgressMsg{Done: i, Total: len(attachments)})
 
@@ -1142,14 +1143,15 @@ func run() error {
 						reader = f
 					}
 
-					currentCaption := ""
-					if i == len(attachments)-1 {
-						currentCaption = caption
-					}
+					params = append(params, slack.UploadFileParameters{
+						Filename: att.Filename,
+						Reader:   reader,
+						FileSize: int(att.Size),
+					})
+				}
 
-					if _, err := client.UploadFile(ctx, channelID, threadTS, att.Filename, reader, att.Size, currentCaption); err != nil {
-						return ui.UploadResultMsg{Err: fmt.Errorf("uploading %s (%d/%d): %w", att.Filename, i+1, len(attachments), err)}
-					}
+				if _, err := client.UploadFiles(ctx, channelID, threadTS, params, caption); err != nil {
+					return ui.UploadResultMsg{Err: err}
 				}
 				p.Send(ui.UploadProgressMsg{Done: len(attachments), Total: len(attachments)})
 				return ui.UploadResultMsg{Err: nil}
@@ -1228,6 +1230,19 @@ func run() error {
 				Summaries:              summaries,
 				SubscriptionsAvailable: wctx.SubscriptionsAvailable,
 			}
+		})
+
+		app.SetActivityListFetcher(func(teamID string) tea.Msg {
+			wctx := router.Active()
+			if wctx == nil {
+				return nil
+			}
+			items, err := db.ListActivityItems(teamID, wctx.Client.UserID(), 100)
+			if err != nil {
+				log.Printf("Warning: ListActivityItems(%s): %v", teamID, err)
+				return ui.ActivityListLoadedMsg{TeamID: teamID, Items: nil}
+			}
+			return ui.ActivityListLoadedMsg{TeamID: teamID, Items: items}
 		})
 
 		app.SetThreadReplySender(func(channelID, threadTS, text string) tea.Msg {

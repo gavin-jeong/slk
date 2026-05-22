@@ -45,6 +45,9 @@ type SlackAPI interface {
 	EndDNDContext(ctx context.Context) error
 	GetDNDInfoContext(ctx context.Context, user *string, options ...slack.ParamOption) (*slack.DNDStatus, error)
 	UploadFileContext(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error)
+	GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error)
+	UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error
+	CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error)
 }
 
 // defaultAPIBaseURL is the canonical Slack Web API root used as a fallback
@@ -841,6 +844,61 @@ func (c *Client) UploadFile(
 		return nil, fmt.Errorf("uploading file %q: %w", filename, err)
 	}
 	return f, nil
+}
+
+// UploadFiles uploads multiple files and completes them in a single share so
+// Slack renders them under one message. caption, when non-empty, is applied to
+// the shared message created by files.completeUploadExternal.
+func (c *Client) UploadFiles(
+	ctx context.Context,
+	channelID, threadTS string,
+	files []slack.UploadFileParameters,
+	caption string,
+) ([]slack.FileSummary, error) {
+	if len(files) == 0 {
+		return nil, nil
+	}
+	uploads := make([]slack.FileSummary, 0, len(files))
+	for _, file := range files {
+		if file.Filename == "" {
+			return nil, fmt.Errorf("uploading file: filename cannot be empty")
+		}
+		if file.FileSize == 0 {
+			return nil, fmt.Errorf("uploading %q: file size cannot be 0", file.Filename)
+		}
+		u, err := c.api.GetUploadURLExternalContext(ctx, slack.GetUploadURLExternalParameters{
+			AltTxt:      file.AltTxt,
+			FileName:    file.Filename,
+			FileSize:    file.FileSize,
+			SnippetType: file.SnippetType,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get upload URL for %q: %w", file.Filename, err)
+		}
+		if err := c.api.UploadToURL(ctx, slack.UploadToURLParameters{
+			UploadURL: u.UploadURL,
+			Reader:    file.Reader,
+			File:      file.File,
+			Content:   file.Content,
+			Filename:  file.Filename,
+		}); err != nil {
+			return nil, fmt.Errorf("uploading %q to external URL: %w", file.Filename, err)
+		}
+		uploads = append(uploads, slack.FileSummary{ID: u.FileID, Title: file.Title})
+	}
+	resp, err := c.api.CompleteUploadExternalContext(ctx, slack.CompleteUploadExternalParameters{
+		Files:           uploads,
+		Channel:         channelID,
+		InitialComment:  caption,
+		ThreadTimestamp: threadTS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("complete external upload: %w", err)
+	}
+	if len(resp.Files) != len(files) {
+		return nil, fmt.Errorf("complete external upload: got %d files, want %d", len(resp.Files), len(files))
+	}
+	return resp.Files, nil
 }
 
 // UnreadInfo holds the unread state for a single channel.

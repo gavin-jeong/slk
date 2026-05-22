@@ -23,11 +23,16 @@ var nonJoinedColor = lipgloss.Color("#5a5a5a")
 // threads-list view instead of switching channels.
 const ThreadsViewID = "__slk_view_threads"
 
+// ActivityViewID is the sentinel ID used for the synthetic "Activity" entry.
+// Callers detect this in a ChannelResult (Type=="activity") to activate the
+// activity view instead of switching channels.
+const ActivityViewID = "__slk_view_activity"
+
 // ChannelResult is returned when the user selects a channel.
 type ChannelResult struct {
 	ID     string
 	Name   string
-	Type   string // channel, dm, group_dm, private, threads
+	Type   string // channel, dm, group_dm, private, threads, activity
 	Joined bool   // false => caller should join the channel before opening it
 }
 
@@ -35,7 +40,7 @@ type ChannelResult struct {
 type Item struct {
 	ID       string
 	Name     string
-	Type     string // channel, dm, group_dm, private, threads
+	Type     string // channel, dm, group_dm, private, threads, activity
 	Presence string // for DMs: active, away
 	Joined   bool   // true if the user is already a member; false for browseable public channels
 	// LastVisited is the unix timestamp (seconds) of the user's most
@@ -400,6 +405,9 @@ func (m *Model) lessNoQuery(ai, bi int) bool {
 	a, b := m.items[ai], m.items[bi]
 	if a.Synthetic != b.Synthetic {
 		return a.Synthetic
+	}
+	if a.Synthetic && b.Synthetic {
+		return ai < bi
 	}
 	if a.Joined != b.Joined {
 		return a.Joined
