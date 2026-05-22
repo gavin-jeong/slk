@@ -1214,3 +1214,46 @@ func TestSetChannelMembershipAfterLoadingFlipsInChannel(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeUsesRealCursorForIME(t *testing.T) {
+	m := New("general")
+	cmd := m.Focus()
+	if cmd == nil {
+		// Focus may or may not return a blink command, but calling it ensures the
+		// underlying textarea is focused before Cursor() is queried.
+	}
+
+	if m.input.VirtualCursor() {
+		t.Fatal("compose must use the real terminal cursor so IME pre-edit text anchors correctly")
+	}
+	if c := m.Cursor(40, true); c == nil {
+		t.Fatal("focused compose should expose a real cursor")
+	}
+	if c := m.Cursor(40, false); c != nil {
+		t.Fatalf("unfocused compose cursor = %#v, want nil", c)
+	}
+}
+
+func TestComposeCursorAccountsForAttachmentChips(t *testing.T) {
+	plain := New("general")
+	_ = plain.Focus()
+	plainCursor := plain.Cursor(40, true)
+	if plainCursor == nil {
+		t.Fatal("focused compose should expose a real cursor")
+	}
+
+	withAttachment := New("general")
+	_ = withAttachment.Focus()
+	withAttachment.AddAttachment(PendingAttachment{Filename: "screenshot.png", Size: 123})
+	attachmentCursor := withAttachment.Cursor(40, true)
+	if attachmentCursor == nil {
+		t.Fatal("focused compose with attachment should expose a real cursor")
+	}
+
+	if got, want := attachmentCursor.Position.Y-plainCursor.Position.Y, 1; got != want {
+		t.Fatalf("attachment chip cursor Y offset = %d, want %d", got, want)
+	}
+	if got, want := attachmentCursor.Position.X, plainCursor.Position.X; got != want {
+		t.Fatalf("attachment chip cursor X = %d, want unchanged %d", got, want)
+	}
+}

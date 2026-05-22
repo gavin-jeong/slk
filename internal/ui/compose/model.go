@@ -143,6 +143,12 @@ func New(channelName string) Model {
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.SetWidth(40)
+	// Use Bubble Tea's real terminal cursor instead of rendering a virtual
+	// cursor glyph into the textarea. IME pre-edit text (for Korean, etc.) is
+	// anchored by the terminal at the real cursor position; a virtual cursor
+	// leaves the terminal cursor elsewhere, which makes composition appear
+	// split or delayed. The top-level app offsets Cursor() into the panel.
+	ta.SetVirtualCursor(false)
 
 	// Override textarea styles to use our dark background consistently
 	bg := lipgloss.NewStyle().Background(styles.SurfaceDark).Foreground(styles.TextPrimary)
@@ -1257,6 +1263,29 @@ func (m Model) renderChips(width int) string {
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
 	return lipgloss.NewStyle().MaxWidth(width).Render(row)
+}
+
+// Cursor returns the compose textarea's real cursor relative to the top-left
+// of View(width, focused). Callers must add the compose panel's screen offset.
+func (m Model) Cursor(width int, focused bool) *tea.Cursor {
+	if !focused {
+		return nil
+	}
+	c := m.input.Cursor()
+	if c == nil {
+		return nil
+	}
+
+	chips := m.renderChips(width)
+	if chips != "" {
+		c.Position.Y += lipgloss.Height(chips)
+	}
+
+	// ComposeBox has a thick left border plus one cell of left/top padding
+	// before the textarea content begins.
+	c.Position.X += 2
+	c.Position.Y++
+	return c
 }
 
 func (m Model) View(width int, focused bool) string {
