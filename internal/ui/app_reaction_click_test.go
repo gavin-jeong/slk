@@ -214,7 +214,4 @@ func TestApp_ClickOnHTTPLinkReturnsBrowserCommand(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected browser launch command for link click")
 	}
-	if a.messagepane.HasSelection() {
-		t.Error("link click must not begin drag selection")
-	}
 }

@@ -149,6 +149,7 @@ type Model struct {
 	// userNames, channelNames) change. On a plain j/k it is reused as-is.
 	chromeCache         string
 	chromeCacheValid    bool
+	chromeLinkHits      []linkHitRect
 	chromeWidth         int
 	chromeReplyCount    int
 	chromeParentTS      string
@@ -1173,12 +1174,13 @@ func (m *Model) View(height, width int) string {
 			Background(styles.Background).
 			Foreground(styles.Border).
 			Render(strings.Repeat("-", width))
-		// v1: discard parent flushes — parent attachments are rare
-		// in the chrome-cached path and threading kitty flushes through
-		// the chromeCache lifecycle adds complexity. Reply flushes are
-		// captured below in the per-reply cache loop.
-		parentContent, _, _, _ := m.renderThreadMessage(m.parent, width, m.userNames, m.channelNames, false)
+			// v1: discard parent flushes — parent attachments are rare
+			// in the chrome-cached path and threading kitty flushes through
+			// the chromeCache lifecycle adds complexity. Reply flushes are
+			// captured below in the per-reply cache loop.
+		parentContent, _, _, parentLinkHits := m.renderThreadMessage(m.parent, width, m.userNames, m.channelNames, false)
 		m.chromeCache = header + "\n" + separator + "\n" + parentContent + "\n" + separator
+		m.chromeLinkHits = parentChromeLinkHits(parentLinkHits)
 		m.chromeHeight = lipgloss.Height(m.chromeCache)
 		m.chromeCacheValid = true
 		m.chromeWidth = width
@@ -1199,6 +1201,9 @@ func (m *Model) View(height, width int) string {
 		replyAreaHeight = 1
 	}
 	m.lastViewHeight = replyAreaHeight
+	m.lastReactionHits = m.lastReactionHits[:0]
+	m.lastLinkHits = m.lastLinkHits[:0]
+	m.lastLinkHits = append(m.lastLinkHits, m.chromeLinkHits...)
 
 	if len(m.replies) == 0 {
 		empty := lipgloss.NewStyle().
@@ -1439,8 +1444,6 @@ func (m *Model) View(height, width int) string {
 	// YOffset is settled; cleared at the start of every frame so an
 	// invisible entry's hits don't survive the next render. Capacity
 	// is preserved across frames (typical case: a handful of pills).
-	m.lastReactionHits = m.lastReactionHits[:0]
-	m.lastLinkHits = m.lastLinkHits[:0]
 	yOff := m.vp.YOffset()
 	for i, e := range m.cache {
 		if len(e.reactionHits) == 0 {
@@ -1721,6 +1724,24 @@ func threadLinkHitsFromWrappedMarkdown(wrappedMarkdown string) []linkEntryHit {
 			colStart:        s.ColStart + 1,
 			colEnd:          s.ColEnd + 1,
 			url:             s.URL,
+		})
+	}
+	return hits
+}
+
+func parentChromeLinkHits(parentHits []linkEntryHit) []linkHitRect {
+	if len(parentHits) == 0 {
+		return nil
+	}
+	hits := make([]linkHitRect, 0, len(parentHits))
+	for _, h := range parentHits {
+		hits = append(hits, linkHitRect{
+			rowStart: 2 + h.rowStartInEntry,
+			rowEnd:   2 + h.rowEndInEntry,
+			colStart: h.colStart - 1,
+			colEnd:   h.colEnd - 1,
+			replyIdx: -1,
+			url:      h.url,
 		})
 	}
 	return hits

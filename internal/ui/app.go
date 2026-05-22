@@ -4980,6 +4980,54 @@ func (a *App) findMessageInActiveChannel(channel, ts string) (messages.MessageIt
 // viewer for path. Uses xdg-open on Linux, open on macOS, and
 // rundll32 on Windows. Errors are logged and otherwise silent — the
 // overlay is already closed by the time this runs.
+func openSingleMessageLinkCmd(msg messages.MessageItem) tea.Cmd {
+	linkURL := singleHTTPURLFromMessage(msg)
+	if linkURL == "" {
+		return nil
+	}
+	return openExternalURLCmd(linkURL)
+}
+
+func singleHTTPURLFromMessage(msg messages.MessageItem) string {
+	urls := httpURLsFromText(messages.MessageTextSource(msg))
+	for _, att := range msg.Attachments {
+		if strings.HasPrefix(att.URL, "http://") || strings.HasPrefix(att.URL, "https://") {
+			urls = append(urls, att.URL)
+		}
+	}
+	if len(urls) != 1 {
+		return ""
+	}
+	return urls[0]
+}
+
+func httpURLsFromText(text string) []string {
+	var urls []string
+	for start := 0; start < len(text); {
+		idx := -1
+		for _, prefix := range []string{"https://", "http://"} {
+			if i := strings.Index(text[start:], prefix); i >= 0 && (idx == -1 || start+i < idx) {
+				idx = start + i
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		end := idx
+		for end < len(text) {
+			switch text[end] {
+			case ' ', '\t', '\n', '\r', '|', '>':
+				goto found
+			}
+			end++
+		}
+	found:
+		urls = append(urls, strings.TrimRight(text[idx:end], ".,;:!?)\""))
+		start = end
+	}
+	return urls
+}
+
 func openInSystemViewerCmd(path string) tea.Cmd {
 	return openDefaultAppCmd(path, "system viewer")
 }

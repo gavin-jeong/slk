@@ -637,3 +637,33 @@ func TestHitTestLink_ReplyHTTPLink(t *testing.T) {
 		t.Fatalf("url = %q, want https://example.com/thread", gotURL)
 	}
 }
+
+func TestHitTestLink_ParentHTTPLink(t *testing.T) {
+	m := New()
+	m.SetThread(
+		messages.MessageItem{
+			TS:       "1700000001.000000",
+			UserName: "alice",
+			Text:     "parent <https://example.com/parent|parent link>",
+		},
+		nil,
+		"C123",
+		"1700000001.000000",
+	)
+	_ = m.View(20, 80)
+
+	if len(m.lastLinkHits) == 0 {
+		t.Fatal("expected link hit rect for parent HTTP link")
+	}
+	h := m.lastLinkHits[0]
+	replyIdx, gotURL, ok := m.HitTestLink(h.rowStart, h.colStart)
+	if !ok {
+		t.Fatal("expected click inside parent link hit rect to resolve")
+	}
+	if replyIdx != -1 {
+		t.Fatalf("replyIdx = %d, want -1 for parent link", replyIdx)
+	}
+	if gotURL != "https://example.com/parent" {
+		t.Fatalf("url = %q, want https://example.com/parent", gotURL)
+	}
+}
