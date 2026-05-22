@@ -35,6 +35,84 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestConfig_HasGeneralIME(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.toml")
+	if HasGeneralIME(missing) {
+		t.Fatal("missing config should not report [general.ime]")
+	}
+
+	without := filepath.Join(dir, "without.toml")
+	if err := os.WriteFile(without, []byte("[general]\ndefault_workspace = \"work\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if HasGeneralIME(without) {
+		t.Fatal("config without [general.ime] reported present")
+	}
+
+	with := filepath.Join(dir, "with.toml")
+	if err := os.WriteFile(with, []byte("[general.ime]\nauto_switch = true\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !HasGeneralIME(with) {
+		t.Fatal("config with [general.ime] reported absent")
+	}
+}
+
+func TestConfig_IMEDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.General.IME.AutoSwitch {
+		t.Fatal("expected IME auto-switch disabled by default")
+	}
+	if got, want := cfg.General.IME.NormalInputSource, "com.apple.keylayout.ABC"; got != want {
+		t.Fatalf("normal_input_source = %q, want %q", got, want)
+	}
+	if cfg.General.IME.SwitcherCommand != "" {
+		t.Fatalf("switcher_command = %q, want empty auto-detect", cfg.General.IME.SwitcherCommand)
+	}
+	if cfg.General.IME.RestoreInsert == nil || !*cfg.General.IME.RestoreInsert {
+		t.Fatal("restore_insert should default true")
+	}
+	if got, want := cfg.General.IME.TimeoutMS, 200; got != want {
+		t.Fatalf("timeout_ms = %d, want %d", got, want)
+	}
+}
+
+func TestConfig_IMEOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	data := []byte(`
+[general.ime]
+auto_switch = true
+normal_input_source = "com.apple.keylayout.US"
+switcher_command = "macism"
+restore_insert = false
+timeout_ms = 350
+`)
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.General.IME.AutoSwitch {
+		t.Fatal("expected IME auto-switch enabled")
+	}
+	if got, want := cfg.General.IME.NormalInputSource, "com.apple.keylayout.US"; got != want {
+		t.Fatalf("normal_input_source = %q, want %q", got, want)
+	}
+	if got, want := cfg.General.IME.SwitcherCommand, "macism"; got != want {
+		t.Fatalf("switcher_command = %q, want %q", got, want)
+	}
+	if cfg.General.IME.RestoreInsert == nil || *cfg.General.IME.RestoreInsert {
+		t.Fatal("restore_insert should parse explicit false")
+	}
+	if got, want := cfg.General.IME.TimeoutMS, 350; got != want {
+		t.Fatalf("timeout_ms = %d, want %d", got, want)
+	}
+}
+
 func TestLoadConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
