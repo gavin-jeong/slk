@@ -11,15 +11,15 @@ import (
 )
 
 type Config struct {
-	General       General                      `toml:"general"`
-	Appearance    Appearance                   `toml:"appearance"`
-	Animations    Animations                   `toml:"animations"`
-	Notifications Notifications                `toml:"notifications"`
-	Cache         CacheConfig                  `toml:"cache"`
-	Sidebar       Sidebar                      `toml:"sidebar"`
-	Sections      map[string]SectionDef        `toml:"sections"`
-	Theme         Theme                        `toml:"theme"`
-	Workspaces    map[string]Workspace         `toml:"workspaces"`
+	General       General               `toml:"general"`
+	Appearance    Appearance            `toml:"appearance"`
+	Animations    Animations            `toml:"animations"`
+	Notifications Notifications         `toml:"notifications"`
+	Cache         CacheConfig           `toml:"cache"`
+	Sidebar       Sidebar               `toml:"sidebar"`
+	Sections      map[string]SectionDef `toml:"sections"`
+	Theme         Theme                 `toml:"theme"`
+	Workspaces    map[string]Workspace  `toml:"workspaces"`
 }
 
 // SectionDef defines a sidebar section with channel name patterns.
@@ -36,7 +36,19 @@ type General struct {
 	// sidebar sections (via users.channelSections.list + WS events)
 	// instead of the config-glob [sections.*] system. Pointer so we
 	// can distinguish "unset" (default true) from explicit false.
-	UseSlackSections *bool `toml:"use_slack_sections"`
+	UseSlackSections *bool     `toml:"use_slack_sections"`
+	IME              IMEConfig `toml:"ime"`
+}
+
+// IMEConfig controls optional input-source switching on modal transitions.
+// It is disabled by default because it shells out to a local helper such as
+// macism or im-select.
+type IMEConfig struct {
+	AutoSwitch        bool   `toml:"auto_switch"`
+	NormalInputSource string `toml:"normal_input_source"`
+	SwitcherCommand   string `toml:"switcher_command"`
+	RestoreInsert     *bool  `toml:"restore_insert"`
+	TimeoutMS         int    `toml:"timeout_ms"`
 }
 
 type Appearance struct {
@@ -121,7 +133,15 @@ type Theme struct {
 }
 
 func Default() Config {
+	restoreInsert := true
 	return Config{
+		General: General{
+			IME: IMEConfig{
+				NormalInputSource: "com.apple.keylayout.ABC",
+				RestoreInsert:     &restoreInsert,
+				TimeoutMS:         200,
+			},
+		},
 		Appearance: Appearance{
 			Theme:           "nord",
 			TimestampFormat: "3:04 PM",
@@ -174,6 +194,26 @@ func Load(path string) (Config, error) {
 	cfg.Workspaces = resolved
 
 	return cfg, nil
+}
+
+// HasGeneralIME reports whether config.toml explicitly contains a [general.ime]
+// table. Load merges defaults, so callers that want to bootstrap missing IME
+// config need this separate presence check. Missing files and malformed TOML are
+// treated as absent; Load still returns syntax errors for normal startup.
+func HasGeneralIME(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var raw struct {
+		General struct {
+			IME map[string]any `toml:"ime"`
+		} `toml:"general"`
+	}
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return raw.General.IME != nil
 }
 
 // WorkspaceByTeamID returns the configured Workspace for the given

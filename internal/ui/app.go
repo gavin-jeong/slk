@@ -737,6 +737,12 @@ type App struct {
 	width          int
 	height         int
 	keys           KeyMap
+	imeSwitcher    *inputSourceSwitcher
+
+	// suppressNextInsertText drops duplicate printable key events that can arrive
+	// immediately after normal-mode IME shortcut handling while the terminal is
+	// switching keyboard protocols for insert mode.
+	suppressNextInsertText map[string]struct{}
 
 	// Cached layout widths for mouse hit-testing
 	layoutRailWidth  int
@@ -1289,6 +1295,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return a, a.toggleReactionOnMessageItem(a.activeChannelID, msgs[hitMsgIdx], emojiName)
 						}
 					}
+					if _, linkURL, hit := a.messagepane.HitTestLink(contentY, px); hit && linkURL != "" {
+						return a, openExternalURLCmd(linkURL)
+					}
 					if hitMsgIdx, attIdx, fileID, hit := a.messagepane.HitTest(contentY, px); hit && fileID != "" {
 						msgs := a.messagepane.Messages()
 						if hitMsgIdx >= 0 && hitMsgIdx < len(msgs) {
@@ -1322,6 +1331,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if hitReplyIdx >= 0 && hitReplyIdx < len(replies) {
 						return a, a.toggleReactionOnMessageItem(a.threadPanel.ChannelID(), replies[hitReplyIdx], emojiName)
 					}
+				}
+				if _, linkURL, hit := a.threadPanel.HitTestLink(py, px); hit && linkURL != "" {
+					return a, openExternalURLCmd(linkURL)
 				}
 				a.drag = dragState{panel: PanelThread, pressX: px, pressY: py, lastX: px, lastY: py}
 				a.threadPanel.BeginSelectionAt(py, px)
@@ -2741,7 +2753,56 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+func (a *App) rememberInsertTransitionKey(msg tea.KeyMsg) {
+	k := msg.Key()
+	values := make(map[string]struct{})
+	if k.Text != "" {
+		values[k.Text] = struct{}{}
+	}
+	if k.Code != 0 {
+		values[string(k.Code)] = struct{}{}
+	}
+	for _, candidate := range koreanIMEKeyCandidates(k) {
+		if candidate != "" {
+			values[candidate] = struct{}{}
+		}
+	}
+	if len(values) == 0 {
+		return
+	}
+	a.suppressNextInsertText = values
+}
+
+func (a *App) shouldSuppressInsertText(msg tea.KeyMsg) bool {
+	if len(a.suppressNextInsertText) == 0 {
+		return false
+	}
+	k := msg.Key()
+	candidates := make([]string, 0, 4)
+	if k.Text != "" {
+		candidates = append(candidates, k.Text)
+	}
+	if k.Code != 0 {
+		candidates = append(candidates, string(k.Code))
+	}
+	candidates = append(candidates, koreanIMEKeyCandidates(k)...)
+	for _, candidate := range candidates {
+		if _, ok := a.suppressNextInsertText[candidate]; ok {
+			a.suppressNextInsertText = nil
+			return true
+		}
+	}
+	// Only suppress the immediate duplicate. If the next key is different, let it
+	// through and clear the guard.
+	a.suppressNextInsertText = nil
+	return false
+}
+
 func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if _, ok := msg.(tea.KeyReleaseMsg); ok {
+		return nil
+	}
+
 	// Ctrl+C is intercepted globally and routed through the same
 	// confirm prompt as lowercase `q`, so an accidental Ctrl+C while
 	// reading or typing doesn't yank the whole app out from under the
@@ -2917,6 +2978,75 @@ func (a *App) dropStaleStackEntries(stack *navStack, stale []int) {
 	stack.entries = out
 }
 
+func (a *App) matchesKey(msg tea.KeyMsg, bindings ...key.Binding) bool {
+	if key.Matches(msg, bindings...) {
+		return true
+	}
+
+	for _, candidate := range koreanIMEKeyCandidates(msg.Key()) {
+		for _, binding := range bindings {
+			if !binding.Enabled() {
+				continue
+			}
+			for _, bindingKey := range binding.Keys() {
+				if candidate == bindingKey {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func koreanIMEKeyCandidates(k tea.Key) []string {
+	candidates := make([]string, 0, 4)
+	if k.BaseCode != 0 {
+		candidates = append(candidates, qwertyKeyStrings(k.BaseCode, k.Mod)...)
+	}
+	if k.Code != 0 {
+		if qwerty, ok := koreanIMEQWERTY[k.Code]; ok {
+			candidates = append(candidates, modifiedKeyStrings(qwerty, k.Mod)...)
+		}
+	}
+	if len([]rune(k.Text)) == 1 {
+		if qwerty, ok := koreanIMEQWERTY[[]rune(k.Text)[0]]; ok {
+			candidates = append(candidates, modifiedKeyStrings(qwerty, k.Mod)...)
+		}
+	}
+	return candidates
+}
+
+func qwertyKeyStrings(code rune, mod tea.KeyMod) []string {
+	return modifiedKeyStrings(string(code), mod)
+}
+
+func modifiedKeyStrings(keyText string, mod tea.KeyMod) []string {
+	if len(keyText) != 1 {
+		return nil
+	}
+	code := rune(keyText[0])
+	if mod == 0 {
+		return []string{keyText}
+	}
+	candidates := []string{tea.Key{Code: code, Mod: mod}.String()}
+	if mod == tea.ModShift {
+		if code >= 'a' && code <= 'z' {
+			candidates = append(candidates, string(code-('a'-'A')))
+		} else if code >= 'A' && code <= 'Z' {
+			candidates = append(candidates, string(code))
+		}
+	}
+	return candidates
+}
+
+var koreanIMEQWERTY = map[rune]string{
+	'ㅂ': "q", 'ㅈ': "w", 'ㄷ': "e", 'ㄱ': "r", 'ㅅ': "t", 'ㅛ': "y", 'ㅕ': "u", 'ㅑ': "i", 'ㅐ': "o", 'ㅔ': "p",
+	'ㅁ': "a", 'ㄴ': "s", 'ㅇ': "d", 'ㄹ': "f", 'ㅎ': "g", 'ㅗ': "h", 'ㅓ': "j", 'ㅏ': "k", 'ㅣ': "l",
+	'ㅋ': "z", 'ㅌ': "x", 'ㅊ': "c", 'ㅍ': "v", 'ㅠ': "b", 'ㅜ': "n", 'ㅡ': "m",
+	'ㅃ': "Q", 'ㅉ': "W", 'ㄸ': "E", 'ㄲ': "R", 'ㅆ': "T", 'ㅒ': "O", 'ㅖ': "P",
+}
+
 func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 	if key.Matches(msg, a.keys.Top) {
 		if a.pendingTopKey {
@@ -2945,7 +3075,8 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch {
-	case key.Matches(msg, a.keys.InsertMode):
+	case a.matchesKey(msg, a.keys.InsertMode):
+		a.rememberInsertTransitionKey(msg)
 		a.SetMode(ModeInsert)
 		// In the Threads view there is no main compose box — the only
 		// way to type is into the right-side thread panel's compose.
@@ -2958,7 +3089,7 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 		a.focusedPanel = PanelMessages
 		return a.compose.Focus()
 
-	case key.Matches(msg, a.keys.Escape):
+	case a.matchesKey(msg, a.keys.Escape):
 		a.cancelEdit()
 		a.SetMode(ModeNormal)
 		a.compose.Blur()
@@ -2966,48 +3097,48 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 			a.CloseThread()
 		}
 
-	case key.Matches(msg, a.keys.Tab):
+	case a.matchesKey(msg, a.keys.Tab):
 		a.FocusNext()
 
-	case key.Matches(msg, a.keys.ShiftTab):
+	case a.matchesKey(msg, a.keys.ShiftTab):
 		a.FocusPrev()
 
-	case key.Matches(msg, a.keys.ToggleSidebar):
+	case a.matchesKey(msg, a.keys.ToggleSidebar):
 		a.ToggleSidebar()
 
-	case key.Matches(msg, a.keys.ToggleThread):
+	case a.matchesKey(msg, a.keys.ToggleThread):
 		a.ToggleThread()
 
-	case key.Matches(msg, a.keys.NavBack):
+	case a.matchesKey(msg, a.keys.NavBack):
 		if cmd := a.navigateBack(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.NavForward):
+	case a.matchesKey(msg, a.keys.NavForward):
 		if cmd := a.navigateForward(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.Down):
+	case a.matchesKey(msg, a.keys.Down):
 		if cmd := a.handleDown(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.Up):
+	case a.matchesKey(msg, a.keys.Up):
 		if cmd := a.handleUp(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.Left):
+	case a.matchesKey(msg, a.keys.Left):
 		a.FocusPrev()
 
-	case key.Matches(msg, a.keys.Right):
+	case a.matchesKey(msg, a.keys.Right):
 		a.FocusNext()
 
-	case key.Matches(msg, a.keys.Enter):
+	case a.matchesKey(msg, a.keys.Enter):
 		return a.handleEnter()
 
-	case key.Matches(msg, a.keys.ToggleSection):
+	case a.matchesKey(msg, a.keys.ToggleSection):
 		// Space on a sidebar section header toggles its collapsed
 		// state; elsewhere it falls through to whatever the focused
 		// panel does with a literal space (typically nothing in
@@ -3018,83 +3149,83 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 
-	case key.Matches(msg, a.keys.Bottom):
+	case a.matchesKey(msg, a.keys.Bottom):
 		if cmd := a.handleGoToBottom(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.PageUp):
+	case a.matchesKey(msg, a.keys.PageUp):
 		a.scrollFocusedPanel(-a.pageSize())
 
-	case key.Matches(msg, a.keys.PageDown):
+	case a.matchesKey(msg, a.keys.PageDown):
 		a.scrollFocusedPanel(a.pageSize())
 
-	case key.Matches(msg, a.keys.HalfPageUp):
+	case a.matchesKey(msg, a.keys.HalfPageUp):
 		a.scrollFocusedPanel(-a.halfPageSize())
 
-	case key.Matches(msg, a.keys.HalfPageDown):
+	case a.matchesKey(msg, a.keys.HalfPageDown):
 		a.scrollFocusedPanel(a.halfPageSize())
 
-	case key.Matches(msg, a.keys.Help):
+	case a.matchesKey(msg, a.keys.Help):
 		a.help.SetEntries(help.FromKeyMap(a.keys))
 		a.help.Open()
 		a.SetMode(ModeHelp)
 
-	case key.Matches(msg, a.keys.WorkspaceFinder):
+	case a.matchesKey(msg, a.keys.WorkspaceFinder):
 		a.workspaceFinder.Open()
 		a.SetMode(ModeWorkspaceFinder)
 
-	case key.Matches(msg, a.keys.ThemeSwitcher):
+	case a.matchesKey(msg, a.keys.ThemeSwitcher):
 		// Per-workspace scope. Header text shows the current workspace name.
 		header := "Theme for " + a.activeTeamName()
 		a.themeSwitcher.OpenWithScope(themeswitcher.ScopeWorkspace, header)
 		a.SetMode(ModeThemeSwitcher)
 		return nil
-	case key.Matches(msg, a.keys.ThemeSwitcherGlobal):
+	case a.matchesKey(msg, a.keys.ThemeSwitcherGlobal):
 		a.themeSwitcher.OpenWithScope(themeswitcher.ScopeGlobal, "Default theme for new workspaces")
 		a.SetMode(ModeThemeSwitcher)
 		return nil
 
-	case key.Matches(msg, a.keys.PresenceMenu):
+	case a.matchesKey(msg, a.keys.PresenceMenu):
 		header := a.workspaceNameForActive()
 		pres, dndEnabled, dndEnd := a.activeWorkspaceStatus()
 		a.presenceMenu.OpenWith(header, pres, dndEnabled, dndEnd)
 		a.SetMode(ModePresenceMenu)
 
-	case key.Matches(msg, a.keys.FuzzyFinder) || key.Matches(msg, a.keys.FuzzyFinderAlt):
+	case a.matchesKey(msg, a.keys.FuzzyFinder) || a.matchesKey(msg, a.keys.FuzzyFinderAlt):
 		a.channelFinder.Open()
 		a.SetMode(ModeChannelFinder)
 
-	case key.Matches(msg, a.keys.Reaction):
+	case a.matchesKey(msg, a.keys.Reaction):
 		if a.focusedPanel == PanelMessages {
 			return a.openPickerFromMessage()
 		} else if a.focusedPanel == PanelThread {
 			return a.openPickerFromThread()
 		}
 
-	case key.Matches(msg, a.keys.ReactionNav):
+	case a.matchesKey(msg, a.keys.ReactionNav):
 		if a.focusedPanel == PanelMessages {
 			a.messagepane.EnterReactionNav()
 		} else if a.focusedPanel == PanelThread {
 			a.threadPanel.EnterReactionNav()
 		}
 
-	case key.Matches(msg, a.keys.CopyPermalink):
+	case a.matchesKey(msg, a.keys.CopyPermalink):
 		return a.copyPermalinkOfSelected()
 
-	case key.Matches(msg, a.keys.Edit):
+	case a.matchesKey(msg, a.keys.Edit):
 		return a.beginEditOfSelected()
 
-	case key.Matches(msg, a.keys.Delete):
+	case a.matchesKey(msg, a.keys.Delete):
 		return a.beginDeleteOfSelected()
 
-	case key.Matches(msg, a.keys.OpenPreview):
+	case a.matchesKey(msg, a.keys.OpenPreview):
 		return a.openImagePreviewOfSelected()
 
-	case key.Matches(msg, a.keys.MarkUnread):
+	case a.matchesKey(msg, a.keys.MarkUnread):
 		return a.markUnreadOfSelected()
 
-	case key.Matches(msg, a.keys.CloseThreadView):
+	case a.matchesKey(msg, a.keys.CloseThreadView):
 		// Lowercase q is "close thread view" when one is open; if no
 		// thread panel is visible it's a no-op (Q and Ctrl+C are the
 		// quit keys). The vim-style pairing: q closes the transient
@@ -3104,7 +3235,7 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 
-	case key.Matches(msg, a.keys.QuitConfirm):
+	case a.matchesKey(msg, a.keys.QuitConfirm):
 		a.openQuitConfirm()
 		return nil
 
@@ -3212,6 +3343,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 		a.SetMode(ModeNormal)
 		a.compose.Blur()
 		a.threadCompose.Blur()
+		return nil
+	}
+
+	if a.shouldSuppressInsertText(msg) {
 		return nil
 	}
 
@@ -3698,19 +3833,19 @@ func (a *App) updateReactionOnMessage(channelID, messageTS, emojiName, userID st
 
 func (a *App) handleReactionNav(msg tea.KeyMsg) tea.Cmd {
 	switch {
-	case key.Matches(msg, a.keys.Left):
+	case a.matchesKey(msg, a.keys.Left):
 		a.messagepane.ReactionNavLeft()
-	case key.Matches(msg, a.keys.Right):
+	case a.matchesKey(msg, a.keys.Right):
 		a.messagepane.ReactionNavRight()
-	case key.Matches(msg, a.keys.Enter):
+	case a.matchesKey(msg, a.keys.Enter):
 		emojiName, isPlus := a.messagepane.SelectedReaction()
 		if isPlus {
 			return a.openPickerFromMessage()
 		}
 		return a.toggleReactionOnSelectedMessage(emojiName)
-	case key.Matches(msg, a.keys.Reaction):
+	case a.matchesKey(msg, a.keys.Reaction):
 		return a.openPickerFromMessage()
-	case key.Matches(msg, a.keys.Escape):
+	case a.matchesKey(msg, a.keys.Escape):
 		a.messagepane.ExitReactionNav()
 	}
 	return nil
@@ -3718,19 +3853,19 @@ func (a *App) handleReactionNav(msg tea.KeyMsg) tea.Cmd {
 
 func (a *App) handleThreadReactionNav(msg tea.KeyMsg) tea.Cmd {
 	switch {
-	case key.Matches(msg, a.keys.Left):
+	case a.matchesKey(msg, a.keys.Left):
 		a.threadPanel.ReactionNavLeft()
-	case key.Matches(msg, a.keys.Right):
+	case a.matchesKey(msg, a.keys.Right):
 		a.threadPanel.ReactionNavRight()
-	case key.Matches(msg, a.keys.Enter):
+	case a.matchesKey(msg, a.keys.Enter):
 		emojiName, isPlus := a.threadPanel.SelectedReaction()
 		if isPlus {
 			return a.openPickerFromThread()
 		}
 		return a.toggleReactionOnSelectedThread(emojiName)
-	case key.Matches(msg, a.keys.Reaction):
+	case a.matchesKey(msg, a.keys.Reaction):
 		return a.openPickerFromThread()
-	case key.Matches(msg, a.keys.Escape):
+	case a.matchesKey(msg, a.keys.Escape):
 		a.threadPanel.ExitReactionNav()
 	}
 	return nil
@@ -4235,11 +4370,15 @@ func (a *App) handleEnter() tea.Cmd {
 }
 
 func (a *App) SetMode(mode Mode) {
+	prev := a.mode
 	if mode == ModeInsert {
 		a.clearSelections()
 	}
 	a.mode = mode
 	a.statusbar.SetMode(mode)
+	if prev != mode {
+		a.imeSwitcher.OnModeChange(prev, mode)
+	}
 }
 
 // exitInsertAfterSend mirrors the Esc-from-insert handler so that
@@ -4964,22 +5103,81 @@ func (a *App) findMessageInActiveChannel(channel, ts string) (messages.MessageIt
 // viewer for path. Uses xdg-open on Linux, open on macOS, and
 // rundll32 on Windows. Errors are logged and otherwise silent — the
 // overlay is already closed by the time this runs.
+func openSingleMessageLinkCmd(msg messages.MessageItem) tea.Cmd {
+	linkURL := singleHTTPURLFromMessage(msg)
+	if linkURL == "" {
+		return nil
+	}
+	return openExternalURLCmd(linkURL)
+}
+
+func singleHTTPURLFromMessage(msg messages.MessageItem) string {
+	urls := httpURLsFromText(messages.MessageTextSource(msg))
+	for _, att := range msg.Attachments {
+		if strings.HasPrefix(att.URL, "http://") || strings.HasPrefix(att.URL, "https://") {
+			urls = append(urls, att.URL)
+		}
+	}
+	if len(urls) != 1 {
+		return ""
+	}
+	return urls[0]
+}
+
+func httpURLsFromText(text string) []string {
+	var urls []string
+	for start := 0; start < len(text); {
+		idx := -1
+		for _, prefix := range []string{"https://", "http://"} {
+			if i := strings.Index(text[start:], prefix); i >= 0 && (idx == -1 || start+i < idx) {
+				idx = start + i
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		end := idx
+		for end < len(text) {
+			switch text[end] {
+			case ' ', '\t', '\n', '\r', '|', '>':
+				goto found
+			}
+			end++
+		}
+	found:
+		urls = append(urls, strings.TrimRight(text[idx:end], ".,;:!?)\""))
+		start = end
+	}
+	return urls
+}
+
 func openInSystemViewerCmd(path string) tea.Cmd {
+	return openDefaultAppCmd(path, "system viewer")
+}
+
+func openExternalURLCmd(rawURL string) tea.Cmd {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return nil
+	}
+	return openDefaultAppCmd(rawURL, "external browser")
+}
+
+func openDefaultAppCmd(target, label string) tea.Cmd {
 	return func() tea.Msg {
-		if path == "" {
+		if target == "" {
 			return nil
 		}
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "darwin":
-			cmd = exec.Command("open", path)
+			cmd = exec.Command("open", target)
 		case "windows":
-			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 		default:
-			cmd = exec.Command("xdg-open", path)
+			cmd = exec.Command("xdg-open", target)
 		}
 		if err := cmd.Start(); err != nil {
-			log.Printf("system viewer launch failed: %v", err)
+			log.Printf("%s launch failed: %v", label, err)
 		}
 		return nil
 	}
@@ -5180,6 +5378,10 @@ func (a *App) SetThemeOverrides(overrides config.Theme) {
 	a.themeOverrides = overrides
 }
 
+func (a *App) SetIMEConfig(cfg config.IMEConfig) {
+	a.imeSwitcher = newInputSourceSwitcher(cfg)
+}
+
 // SetTypingEnabled controls whether typing indicators are shown and sent.
 func (a *App) SetTypingEnabled(enabled bool) {
 	a.typingEnabled = enabled
@@ -5377,14 +5579,23 @@ func (a *App) typingIndicatorText(names []string) string {
 	}
 }
 
-func withKeyboardEnhancements(v tea.View) tea.View {
-	v.KeyboardEnhancements.ReportAlternateKeys = true
-	v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes = true
-	v.KeyboardEnhancements.ReportAssociatedText = true
+func configureTerminalInputView(v tea.View, mode Mode) tea.View {
+	// In normal mode there is no text entry, so terminals that support the
+	// Kitty keyboard protocol may report alternate/base key metadata that lets
+	// shortcuts match the physical key when the terminal receives it. This is
+	// opportunistic: IME preedit/marked text can still be consumed by the
+	// terminal or OS before anything reaches the child PTY. Keep printable
+	// associated-text reporting off because some terminals duplicate text input.
+	if mode == ModeNormal {
+		v.KeyboardEnhancements.ReportEventTypes = true
+		v.KeyboardEnhancements.ReportAlternateKeys = true
+	}
 	return v
 }
 
 func (a *App) View() tea.View {
+	var activeCursor *tea.Cursor
+
 	// Before the terminal reports its size, we can't lay out the
 	// real three-panel UI. Render the loading overlay (or a minimal
 	// "Initializing..." fallback) using a sane default canvas so the
@@ -5403,7 +5614,7 @@ func (a *App) View() tea.View {
 		}
 		v := tea.NewView(screen)
 		v.AltScreen = true
-		return withKeyboardEnhancements(v)
+		return configureTerminalInputView(v, a.mode)
 	}
 
 	statusHeight := 1
@@ -5598,14 +5809,18 @@ func (a *App) View() tea.View {
 	} else {
 		// Channel view: split into cached top region + fresh bottom region.
 		composeView := a.compose.View(msgWidth-2, composeFocused)
+		composeCursorYOffset := 0
 		// Inline pickers stack above the compose box. Both should never be
 		// visible simultaneously (mutually exclusive in compose.Update);
 		// emoji wins if somehow both are.
 		if pickerView := a.compose.EmojiPickerView(msgWidth - 2); pickerView != "" {
+			composeCursorYOffset = lipgloss.Height(pickerView)
 			composeView = pickerView + "\n" + composeView
 		} else if mentionView := a.compose.MentionPickerView(msgWidth - 2); mentionView != "" {
+			composeCursorYOffset = lipgloss.Height(mentionView)
 			composeView = mentionView + "\n" + composeView
 		} else if channelView := a.compose.ChannelPickerView(msgWidth - 2); channelView != "" {
+			composeCursorYOffset = lipgloss.Height(channelView)
 			composeView = channelView + "\n" + composeView
 		} else if slashView := a.compose.SlashPickerView(msgWidth - 2); slashView != "" {
 			composeView = slashView + "\n" + composeView
@@ -5677,6 +5892,13 @@ func (a *App) View() tea.View {
 			bottomBorderStyle.Render(bottomInner),
 			msgWidth+msgBorder, bottomHeight+1, // +1 for bottom border edge
 		)
+		if composeFocused {
+			if c := a.compose.Cursor(msgWidth-2, true); c != nil {
+				c.Position.X += a.layoutSidebarEnd + 1
+				c.Position.Y += topHeight + typingHeight + 1 + composeCursorYOffset
+				activeCursor = c
+			}
+		}
 
 		panels = append(panels, topBordered+"\n"+bottomBordered)
 	}
@@ -5698,11 +5920,15 @@ func (a *App) View() tea.View {
 		a.threadCompose.SetWidth(threadWidth - 2)
 
 		threadComposeView := a.threadCompose.View(threadWidth-2, threadComposeFocused)
+		threadComposeCursorYOffset := 0
 		if pickerView := a.threadCompose.EmojiPickerView(threadWidth - 2); pickerView != "" {
+			threadComposeCursorYOffset = lipgloss.Height(pickerView)
 			threadComposeView = pickerView + "\n" + threadComposeView
 		} else if mentionView := a.threadCompose.MentionPickerView(threadWidth - 2); mentionView != "" {
+			threadComposeCursorYOffset = lipgloss.Height(mentionView)
 			threadComposeView = mentionView + "\n" + threadComposeView
 		} else if channelView := a.threadCompose.ChannelPickerView(threadWidth - 2); channelView != "" {
+			threadComposeCursorYOffset = lipgloss.Height(channelView)
 			threadComposeView = channelView + "\n" + threadComposeView
 		} else if slashView := a.threadCompose.SlashPickerView(threadWidth - 2); slashView != "" {
 			threadComposeView = slashView + "\n" + threadComposeView
@@ -5750,6 +5976,13 @@ func (a *App) View() tea.View {
 			bottomBorderStyle.Render(threadBottomInner),
 			threadWidth+threadBorder, threadComposeHeight+1, // +1 bottom border edge
 		)
+		if threadComposeFocused {
+			if c := a.threadCompose.Cursor(threadWidth-2, true); c != nil {
+				c.Position.X += a.layoutMsgEnd + 1
+				c.Position.Y += threadTopHeight + 1 + threadComposeCursorYOffset
+				activeCursor = c
+			}
+		}
 
 		panels = append(panels, threadTopBordered+"\n"+threadBottomBordered)
 	}
@@ -5850,7 +6083,10 @@ func (a *App) View() tea.View {
 	v := tea.NewView(finalScreen)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	return withKeyboardEnhancements(v)
+	if !overlayActive {
+		v.Cursor = activeCursor
+	}
+	return configureTerminalInputView(v, a.mode)
 }
 
 // cancelEdit exits edit mode, restoring the stashed draft to its

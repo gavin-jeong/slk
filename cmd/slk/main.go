@@ -469,6 +469,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	if wrote, err := bootstrapIMEConfigIfMissing(configPath); err != nil {
+		log.Printf("ime bootstrap skipped: %v", err)
+	} else if wrote {
+		cfg, err = config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("reloading config after IME bootstrap: %w", err)
+		}
+	}
 
 	// Load custom themes and apply the active theme
 	themesDir := filepath.Join(configDir, "themes")
@@ -544,6 +552,7 @@ func run() error {
 
 	// Create app
 	app := ui.NewApp()
+	app.SetIMEConfig(cfg.General.IME)
 	app.SetClipboardAvailable(clipboardOK)
 	if useWaylandClipboard {
 		app.SetClipboardReader(ui.WaylandClipboardReader())

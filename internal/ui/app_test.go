@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"github.com/gammons/slk/internal/cache"
 	imgpkg "github.com/gammons/slk/internal/image"
@@ -111,14 +112,17 @@ func TestAppViewRequestsKeyboardDisambiguation(t *testing.T) {
 	app := NewApp()
 	view := app.View()
 
+	if !view.KeyboardEnhancements.ReportEventTypes {
+		t.Fatal("expected event type reporting for enhanced key metadata")
+	}
 	if !view.KeyboardEnhancements.ReportAlternateKeys {
 		t.Fatal("expected alternate key reporting for shifted printable keys")
 	}
-	if !view.KeyboardEnhancements.ReportAllKeysAsEscapeCodes {
-		t.Fatal("expected all keys as escape codes so tmux can pass modified keys")
+	if view.KeyboardEnhancements.ReportAllKeysAsEscapeCodes {
+		t.Fatal("must not force printable keys as escape codes; IME preedit may duplicate input")
 	}
-	if !view.KeyboardEnhancements.ReportAssociatedText {
-		t.Fatal("expected associated text for normal text input while all keys are escape codes")
+	if view.KeyboardEnhancements.ReportAssociatedText {
+		t.Fatal("must not request associated text by default; some terminals duplicate printable input")
 	}
 }
 
@@ -900,6 +904,128 @@ func TestApp_ChannelFinderThreadsRowActivatesThreadsView(t *testing.T) {
 	}
 }
 
+func TestAppViewRequestsKeyboardEnhancementsForIME(t *testing.T) {
+	app := NewApp()
+	app.width = 100
+	app.height = 30
+
+	v := app.View()
+	if !v.KeyboardEnhancements.ReportEventTypes {
+		t.Fatal("normal-mode View should request event type reporting for enhanced key metadata")
+	}
+	if !v.KeyboardEnhancements.ReportAlternateKeys {
+		t.Fatal("normal-mode View should request alternate/base key reporting when terminals provide it")
+	}
+	if v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes {
+		t.Fatal("normal-mode View should not force printable keys as escape codes; IME preedit may still be terminal-owned")
+	}
+	if v.KeyboardEnhancements.ReportAssociatedText {
+		t.Fatal("normal-mode View should not request associated text by default; some terminals duplicate printable input")
+	}
+}
+
+func TestAppStartupViewRequestsKeyboardEnhancementsForIME(t *testing.T) {
+	app := NewApp()
+	app.width = 0
+	app.height = 0
+
+	v := app.View()
+	if !v.KeyboardEnhancements.ReportEventTypes {
+		t.Fatal("startup normal View should request event type reporting before the first real keypress")
+	}
+	if !v.KeyboardEnhancements.ReportAlternateKeys {
+		t.Fatal("startup normal View should request alternate/base key reporting before the first real keypress")
+	}
+	if v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes {
+		t.Fatal("startup normal View should not force printable keys as escape codes")
+	}
+	if v.KeyboardEnhancements.ReportAssociatedText {
+		t.Fatal("startup normal View should not request associated text by default")
+	}
+}
+
+func TestAppInsertViewDoesNotRequestPrintableKeyboardEnhancements(t *testing.T) {
+	app := NewApp()
+	app.width = 100
+	app.height = 30
+	app.mode = ModeInsert
+	app.focusedPanel = PanelMessages
+	_ = app.compose.Focus()
+
+	v := app.View()
+	if v.KeyboardEnhancements.ReportEventTypes {
+		t.Fatal("insert-mode View must not request event type reporting; it can duplicate text input")
+	}
+	if v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes {
+		t.Fatal("insert-mode View must not request all printable keys as escape codes; it can duplicate text input")
+	}
+	if v.KeyboardEnhancements.ReportAssociatedText {
+		t.Fatal("insert-mode View must not request associated text; it can duplicate text input")
+	}
+}
+
+func TestAppInsertTransitionSuppressesDuplicateIMEKey(t *testing.T) {
+	app := NewApp()
+	app.focusedPanel = PanelMessages
+
+	app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ"})
+	if app.mode != ModeInsert {
+		t.Fatalf("mode = %v, want insert", app.mode)
+	}
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ"})
+	if got := app.compose.Value(); got != "" {
+		t.Fatalf("duplicate transition key inserted %q, want empty compose", got)
+	}
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if got := app.compose.Value(); got != "a" {
+		t.Fatalf("next real key inserted %q, want a", got)
+	}
+}
+
+func TestAppInsertTransitionSuppressesCommittedKoreanAfterBaseCode(t *testing.T) {
+	app := NewApp()
+	app.focusedPanel = PanelMessages
+
+	app.handleNormalMode(tea.KeyPressMsg{Code: 'i', BaseCode: 'i'})
+	if app.mode != ModeInsert {
+		t.Fatalf("mode = %v, want insert", app.mode)
+	}
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ"})
+	if got := app.compose.Value(); got != "" {
+		t.Fatalf("late committed transition key inserted %q, want empty compose", got)
+	}
+}
+
+func TestAppInsertTransitionDoesNotSuppressUnrelatedKoreanText(t *testing.T) {
+	app := NewApp()
+	app.focusedPanel = PanelMessages
+
+	app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ"})
+	if app.mode != ModeInsert {
+		t.Fatalf("mode = %v, want insert", app.mode)
+	}
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'ㅎ', Text: "ㅎ"})
+	if got := app.compose.Value(); got != "ㅎ" {
+		t.Fatalf("unrelated Korean text inserted %q, want ㅎ", got)
+	}
+}
+
+func TestAppInsertModeDoesNotSuppressKoreanTypingWithoutTransition(t *testing.T) {
+	app := NewApp()
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	_ = app.compose.Focus()
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'ㅎ', Text: "ㅎ"})
+	if got := app.compose.Value(); got != "ㅎ" {
+		t.Fatalf("Korean text inserted %q, want ㅎ", got)
+	}
+}
+
 // TestApp_ClickOnThreadInThreadsViewOpensIt guards Bug B: a left-click
 // on a thread card in the threads-list view must select that card AND
 // open the corresponding thread. Before the fix, the messages-pane
@@ -1272,6 +1398,89 @@ func TestApp_InsertInThreadsViewFocusesThreadCompose(t *testing.T) {
 	}
 	if app.focusedPanel != PanelThread {
 		t.Errorf("after pressing 'i' in threads view focusedPanel = %v, want PanelThread", app.focusedPanel)
+	}
+}
+
+func TestApp_InsertModeMatchesF2Fallback(t *testing.T) {
+	app := NewApp()
+
+	cmd := app.handleNormalMode(tea.KeyPressMsg{Code: tea.KeyF2})
+	_ = cmd
+
+	if app.mode != ModeInsert {
+		t.Errorf("after pressing F2 mode = %v, want ModeInsert", app.mode)
+	}
+	if app.focusedPanel != PanelMessages {
+		t.Errorf("after pressing F2 focusedPanel = %v, want PanelMessages", app.focusedPanel)
+	}
+}
+
+func TestApp_InsertModeF2FallbackFocusesThreadCompose(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+	app.threadsView.SetSummaries([]cache.ThreadSummary{
+		{ChannelID: "C1", ThreadTS: "1.0", ParentText: "hi"},
+	})
+	app.view = ViewThreads
+	app.threadVisible = true
+	app.focusedPanel = PanelMessages
+
+	cmd := app.handleNormalMode(tea.KeyPressMsg{Code: tea.KeyF2})
+	_ = cmd
+
+	if app.mode != ModeInsert {
+		t.Errorf("after pressing F2 mode = %v, want ModeInsert", app.mode)
+	}
+	if app.focusedPanel != PanelThread {
+		t.Errorf("after pressing F2 in threads view focusedPanel = %v, want PanelThread", app.focusedPanel)
+	}
+}
+
+func TestApp_InsertModeMatchesKoreanIMEKey(t *testing.T) {
+	app := NewApp()
+
+	cmd := app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ"})
+	_ = cmd
+
+	if app.mode != ModeInsert {
+		t.Errorf("after pressing Korean IME 'ㅑ' key mode = %v, want ModeInsert", app.mode)
+	}
+}
+
+func TestApp_InsertModeMatchesPhysicalIBaseCode(t *testing.T) {
+	app := NewApp()
+
+	cmd := app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ", BaseCode: 'i'})
+	_ = cmd
+
+	if app.mode != ModeInsert {
+		t.Errorf("after pressing physical i with Korean IME mode = %v, want ModeInsert", app.mode)
+	}
+}
+
+func TestApp_NormalModeKoreanIMEMatchesGeneralKeyBindings(t *testing.T) {
+	app := NewApp()
+	tests := []struct {
+		name string
+		msg  tea.KeyPressMsg
+		want key.Binding
+	}{
+		{name: "j/down", msg: tea.KeyPressMsg{Code: 'ㅓ', Text: "ㅓ"}, want: app.keys.Down},
+		{name: "k/up", msg: tea.KeyPressMsg{Code: 'ㅏ', Text: "ㅏ"}, want: app.keys.Up},
+		{name: "r/reaction", msg: tea.KeyPressMsg{Code: 'ㄱ', Text: "ㄱ"}, want: app.keys.Reaction},
+		{name: "v/open preview", msg: tea.KeyPressMsg{Code: 'ㅍ', Text: "ㅍ"}, want: app.keys.OpenPreview},
+		{name: "shift+g/bottom", msg: tea.KeyPressMsg{Code: 'ㅎ', Text: "ㅎ", Mod: tea.ModShift}, want: app.keys.Bottom},
+		{name: "shift+r/reaction nav", msg: tea.KeyPressMsg{Code: 'ㄲ', Text: "ㄲ"}, want: app.keys.ReactionNav},
+		{name: "shift+r/reaction nav with shift modifier", msg: tea.KeyPressMsg{Code: 'ㄲ', Text: "ㄲ", Mod: tea.ModShift}, want: app.keys.ReactionNav},
+		{name: "base code q/close thread", msg: tea.KeyPressMsg{Code: 'ㅂ', Text: "ㅂ", BaseCode: 'q'}, want: app.keys.CloseThreadView},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !app.matchesKey(tt.msg, tt.want) {
+				t.Fatalf("matchesKey(%q) = false, want true", tt.name)
+			}
+		})
 	}
 }
 

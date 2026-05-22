@@ -53,7 +53,7 @@ func DefaultKeyMap() KeyMap {
 		Right:               key.NewBinding(key.WithKeys("l", "right"), key.WithHelp("l/right", "right")),
 		Enter:               key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/confirm")),
 		Escape:              key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		InsertMode:          key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "insert mode")),
+		InsertMode:          key.NewBinding(key.WithKeys("i", "f2"), key.WithHelp("i/F2", "insert mode")),
 		CommandMode:         key.NewBinding(key.WithKeys(":"), key.WithHelp(":", "command mode")),
 		SearchMode:          key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search")),
 		Tab:                 key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next panel")),
