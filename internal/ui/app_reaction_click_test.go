@@ -172,3 +172,49 @@ func TestApp_ClickOnAlreadyReactedPillRemovesReaction(t *testing.T) {
 		t.Errorf("remove emoji got %q want %q", lastRemoveEmoji, "tada")
 	}
 }
+
+func findMessagepaneLinkHit(t *testing.T, a *App) (x, y int, url string) {
+	t.Helper()
+	chrome := a.messagepane.ChromeHeight()
+	maxPaneY := a.height - 2
+	maxPaneX := a.layoutMsgEnd - a.layoutSidebarEnd - 2
+	for paneY := chrome; paneY < maxPaneY; paneY++ {
+		contentY := paneY - chrome
+		for paneX := 0; paneX < maxPaneX; paneX++ {
+			if _, u, ok := a.messagepane.HitTestLink(contentY, paneX); ok {
+				return a.layoutSidebarEnd + 1 + paneX, paneY + 1, u
+			}
+		}
+	}
+	t.Fatal("no link hit found in messages pane after render; layout assumption broken")
+	return 0, 0, ""
+}
+
+func TestApp_ClickOnHTTPLinkReturnsBrowserCommand(t *testing.T) {
+	a := NewApp()
+	a.width = 120
+	a.height = 30
+	a.activeChannelID = "C-link"
+	a.messagepane.SetMessages([]messages.MessageItem{
+		{
+			TS:        "1700000001.000000",
+			UserID:    "U1",
+			UserName:  "alice",
+			Text:      "see <https://example.com/doc|the document> today",
+			Timestamp: "10:30 AM",
+		},
+	})
+	_ = a.View()
+
+	x, y, url := findMessagepaneLinkHit(t, a)
+	if url != "https://example.com/doc" {
+		t.Fatalf("expected link URL, got %q", url)
+	}
+	_, cmd := a.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if cmd == nil {
+		t.Fatal("expected browser launch command for link click")
+	}
+	if a.messagepane.HasSelection() {
+		t.Error("link click must not begin drag selection")
+	}
+}
