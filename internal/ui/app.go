@@ -2991,8 +2991,12 @@ func modifiedKeyStrings(keyText string, mod tea.KeyMod) []string {
 		return []string{keyText}
 	}
 	candidates := []string{tea.Key{Code: code, Mod: mod}.String()}
-	if mod == tea.ModShift && code >= 'a' && code <= 'z' {
-		candidates = append(candidates, string(code-('a'-'A')))
+	if mod == tea.ModShift {
+		if code >= 'a' && code <= 'z' {
+			candidates = append(candidates, string(code-('a'-'A')))
+		} else if code >= 'A' && code <= 'Z' {
+			candidates = append(candidates, string(code))
+		}
 	}
 	return candidates
 }

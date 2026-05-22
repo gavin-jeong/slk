@@ -1293,6 +1293,7 @@ func TestApp_NormalModeKoreanIMEMatchesGeneralKeyBindings(t *testing.T) {
 		{name: "v/open preview", msg: tea.KeyPressMsg{Code: 'ㅍ', Text: "ㅍ"}, want: app.keys.OpenPreview},
 		{name: "shift+g/bottom", msg: tea.KeyPressMsg{Code: 'ㅎ', Text: "ㅎ", Mod: tea.ModShift}, want: app.keys.Bottom},
 		{name: "shift+r/reaction nav", msg: tea.KeyPressMsg{Code: 'ㄲ', Text: "ㄲ"}, want: app.keys.ReactionNav},
+		{name: "shift+r/reaction nav with shift modifier", msg: tea.KeyPressMsg{Code: 'ㄲ', Text: "ㄲ", Mod: tea.ModShift}, want: app.keys.ReactionNav},
 		{name: "base code q/close thread", msg: tea.KeyPressMsg{Code: 'ㅂ', Text: "ㅂ", BaseCode: 'q'}, want: app.keys.CloseThreadView},
 	}
 
