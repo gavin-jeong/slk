@@ -723,6 +723,12 @@ type App struct {
 	width          int
 	height         int
 	keys           KeyMap
+	imeSwitcher    *inputSourceSwitcher
+
+	// suppressNextInsertText drops duplicate printable key events that can arrive
+	// immediately after normal-mode IME shortcut handling while the terminal is
+	// switching keyboard protocols for insert mode.
+	suppressNextInsertText map[string]struct{}
 
 	// Cached layout widths for mouse hit-testing
 	layoutRailWidth  int
@@ -1273,6 +1279,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return a, a.toggleReactionOnMessageItem(a.activeChannelID, msgs[hitMsgIdx], emojiName)
 						}
 					}
+					if _, linkURL, hit := a.messagepane.HitTestLink(contentY, px); hit && linkURL != "" {
+						return a, openExternalURLCmd(linkURL)
+					}
 					if hitMsgIdx, attIdx, fileID, hit := a.messagepane.HitTest(contentY, px); hit && fileID != "" {
 						msgs := a.messagepane.Messages()
 						if hitMsgIdx >= 0 && hitMsgIdx < len(msgs) {
@@ -1306,6 +1315,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if hitReplyIdx >= 0 && hitReplyIdx < len(replies) {
 						return a, a.toggleReactionOnMessageItem(a.threadPanel.ChannelID(), replies[hitReplyIdx], emojiName)
 					}
+				}
+				if _, linkURL, hit := a.threadPanel.HitTestLink(py, px); hit && linkURL != "" {
+					return a, openExternalURLCmd(linkURL)
 				}
 				a.drag = dragState{panel: PanelThread, pressX: px, pressY: py, lastX: px, lastY: py}
 				a.threadPanel.BeginSelectionAt(py, px)
@@ -2702,7 +2714,56 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+func (a *App) rememberInsertTransitionKey(msg tea.KeyMsg) {
+	k := msg.Key()
+	values := make(map[string]struct{})
+	if k.Text != "" {
+		values[k.Text] = struct{}{}
+	}
+	if k.Code != 0 {
+		values[string(k.Code)] = struct{}{}
+	}
+	for _, candidate := range koreanIMEKeyCandidates(k) {
+		if candidate != "" {
+			values[candidate] = struct{}{}
+		}
+	}
+	if len(values) == 0 {
+		return
+	}
+	a.suppressNextInsertText = values
+}
+
+func (a *App) shouldSuppressInsertText(msg tea.KeyMsg) bool {
+	if len(a.suppressNextInsertText) == 0 {
+		return false
+	}
+	k := msg.Key()
+	candidates := make([]string, 0, 4)
+	if k.Text != "" {
+		candidates = append(candidates, k.Text)
+	}
+	if k.Code != 0 {
+		candidates = append(candidates, string(k.Code))
+	}
+	candidates = append(candidates, koreanIMEKeyCandidates(k)...)
+	for _, candidate := range candidates {
+		if _, ok := a.suppressNextInsertText[candidate]; ok {
+			a.suppressNextInsertText = nil
+			return true
+		}
+	}
+	// Only suppress the immediate duplicate. If the next key is different, let it
+	// through and clear the guard.
+	a.suppressNextInsertText = nil
+	return false
+}
+
 func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
+	if _, ok := msg.(tea.KeyReleaseMsg); ok {
+		return nil
+	}
+
 	// Ctrl+C is intercepted globally and routed through the same
 	// confirm prompt as lowercase `q`, so an accidental Ctrl+C while
 	// reading or typing doesn't yank the whole app out from under the
@@ -2954,6 +3015,7 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 
 	switch {
 	case a.matchesKey(msg, a.keys.InsertMode):
+		a.rememberInsertTransitionKey(msg)
 		a.SetMode(ModeInsert)
 		// In the Threads view there is no main compose box — the only
 		// way to type is into the right-side thread panel's compose.
@@ -3204,6 +3266,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 		a.SetMode(ModeNormal)
 		a.compose.Blur()
 		a.threadCompose.Blur()
+		return nil
+	}
+
+	if a.shouldSuppressInsertText(msg) {
 		return nil
 	}
 
@@ -4181,11 +4247,15 @@ func (a *App) handleEnter() tea.Cmd {
 }
 
 func (a *App) SetMode(mode Mode) {
+	prev := a.mode
 	if mode == ModeInsert {
 		a.clearSelections()
 	}
 	a.mode = mode
 	a.statusbar.SetMode(mode)
+	if prev != mode {
+		a.imeSwitcher.OnModeChange(prev, mode)
+	}
 }
 
 // exitInsertAfterSend mirrors the Esc-from-insert handler so that
@@ -4907,21 +4977,32 @@ func (a *App) findMessageInActiveChannel(channel, ts string) (messages.MessageIt
 // rundll32 on Windows. Errors are logged and otherwise silent — the
 // overlay is already closed by the time this runs.
 func openInSystemViewerCmd(path string) tea.Cmd {
+	return openDefaultAppCmd(path, "system viewer")
+}
+
+func openExternalURLCmd(rawURL string) tea.Cmd {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return nil
+	}
+	return openDefaultAppCmd(rawURL, "external browser")
+}
+
+func openDefaultAppCmd(target, label string) tea.Cmd {
 	return func() tea.Msg {
-		if path == "" {
+		if target == "" {
 			return nil
 		}
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "darwin":
-			cmd = exec.Command("open", path)
+			cmd = exec.Command("open", target)
 		case "windows":
-			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 		default:
-			cmd = exec.Command("xdg-open", path)
+			cmd = exec.Command("xdg-open", target)
 		}
 		if err := cmd.Start(); err != nil {
-			log.Printf("system viewer launch failed: %v", err)
+			log.Printf("%s launch failed: %v", label, err)
 		}
 		return nil
 	}
@@ -5115,6 +5196,10 @@ func (a *App) SetStatusSetter(fn func(action presencemenu.Action, snoozeMinutes 
 // SetThemeOverrides stores the config theme overrides for applying on switch.
 func (a *App) SetThemeOverrides(overrides config.Theme) {
 	a.themeOverrides = overrides
+}
+
+func (a *App) SetIMEConfig(cfg config.IMEConfig) {
+	a.imeSwitcher = newInputSourceSwitcher(cfg)
 }
 
 // SetTypingEnabled controls whether typing indicators are shown and sent.
@@ -5314,7 +5399,23 @@ func (a *App) typingIndicatorText(names []string) string {
 	}
 }
 
+func configureTerminalInputView(v tea.View, mode Mode) tea.View {
+	// In normal mode there is no text entry, so terminals that support the
+	// Kitty keyboard protocol may report alternate/base key metadata that lets
+	// shortcuts match the physical key when the terminal receives it. This is
+	// opportunistic: IME preedit/marked text can still be consumed by the
+	// terminal or OS before anything reaches the child PTY. Keep printable
+	// associated-text reporting off because some terminals duplicate text input.
+	if mode == ModeNormal {
+		v.KeyboardEnhancements.ReportEventTypes = true
+		v.KeyboardEnhancements.ReportAlternateKeys = true
+	}
+	return v
+}
+
 func (a *App) View() tea.View {
+	var activeCursor *tea.Cursor
+
 	// Before the terminal reports its size, we can't lay out the
 	// real three-panel UI. Render the loading overlay (or a minimal
 	// "Initializing..." fallback) using a sane default canvas so the
@@ -5333,7 +5434,7 @@ func (a *App) View() tea.View {
 		}
 		v := tea.NewView(screen)
 		v.AltScreen = true
-		return v
+		return configureTerminalInputView(v, a.mode)
 	}
 
 	statusHeight := 1
@@ -5528,14 +5629,18 @@ func (a *App) View() tea.View {
 	} else {
 		// Channel view: split into cached top region + fresh bottom region.
 		composeView := a.compose.View(msgWidth-2, composeFocused)
+		composeCursorYOffset := 0
 		// Inline pickers stack above the compose box. Both should never be
 		// visible simultaneously (mutually exclusive in compose.Update);
 		// emoji wins if somehow both are.
 		if pickerView := a.compose.EmojiPickerView(msgWidth - 2); pickerView != "" {
+			composeCursorYOffset = lipgloss.Height(pickerView)
 			composeView = pickerView + "\n" + composeView
 		} else if mentionView := a.compose.MentionPickerView(msgWidth - 2); mentionView != "" {
+			composeCursorYOffset = lipgloss.Height(mentionView)
 			composeView = mentionView + "\n" + composeView
 		} else if channelView := a.compose.ChannelPickerView(msgWidth - 2); channelView != "" {
+			composeCursorYOffset = lipgloss.Height(channelView)
 			composeView = channelView + "\n" + composeView
 		}
 		// Add a background-colored spacer line above the compose box
@@ -5605,6 +5710,13 @@ func (a *App) View() tea.View {
 			bottomBorderStyle.Render(bottomInner),
 			msgWidth+msgBorder, bottomHeight+1, // +1 for bottom border edge
 		)
+		if composeFocused {
+			if c := a.compose.Cursor(msgWidth-2, true); c != nil {
+				c.Position.X += a.layoutSidebarEnd + 1
+				c.Position.Y += topHeight + typingHeight + 1 + composeCursorYOffset
+				activeCursor = c
+			}
+		}
 
 		panels = append(panels, topBordered+"\n"+bottomBordered)
 	}
@@ -5626,11 +5738,15 @@ func (a *App) View() tea.View {
 		a.threadCompose.SetWidth(threadWidth - 2)
 
 		threadComposeView := a.threadCompose.View(threadWidth-2, threadComposeFocused)
+		threadComposeCursorYOffset := 0
 		if pickerView := a.threadCompose.EmojiPickerView(threadWidth - 2); pickerView != "" {
+			threadComposeCursorYOffset = lipgloss.Height(pickerView)
 			threadComposeView = pickerView + "\n" + threadComposeView
 		} else if mentionView := a.threadCompose.MentionPickerView(threadWidth - 2); mentionView != "" {
+			threadComposeCursorYOffset = lipgloss.Height(mentionView)
 			threadComposeView = mentionView + "\n" + threadComposeView
 		} else if channelView := a.threadCompose.ChannelPickerView(threadWidth - 2); channelView != "" {
+			threadComposeCursorYOffset = lipgloss.Height(channelView)
 			threadComposeView = channelView + "\n" + threadComposeView
 		}
 		threadComposeSpacer := lipgloss.NewStyle().Background(styles.Background).Width(threadWidth - 2).Render("")
@@ -5676,6 +5792,13 @@ func (a *App) View() tea.View {
 			bottomBorderStyle.Render(threadBottomInner),
 			threadWidth+threadBorder, threadComposeHeight+1, // +1 bottom border edge
 		)
+		if threadComposeFocused {
+			if c := a.threadCompose.Cursor(threadWidth-2, true); c != nil {
+				c.Position.X += a.layoutMsgEnd + 1
+				c.Position.Y += threadTopHeight + 1 + threadComposeCursorYOffset
+				activeCursor = c
+			}
+		}
 
 		panels = append(panels, threadTopBordered+"\n"+threadBottomBordered)
 	}
@@ -5776,7 +5899,10 @@ func (a *App) View() tea.View {
 	v := tea.NewView(finalScreen)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	return v
+	if !overlayActive {
+		v.Cursor = activeCursor
+	}
+	return configureTerminalInputView(v, a.mode)
 }
 
 // cancelEdit exits edit mode, restoring the stashed draft to its

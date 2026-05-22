@@ -8,7 +8,7 @@
 | `Enter` | Normal (sidebar) | Open selected channel, or toggle a section header |
 | `Space` | Normal (sidebar) | Toggle the selected section header (collapse/expand) |
 | `Enter` | Normal (message) | Open thread |
-| `i` | Normal | Enter insert mode |
+| `i` / `F2` | Normal | Enter insert mode (`F2` is useful when a CJK IME consumes alphabetic keys for composition) |
 | `Esc` | Insert / Command | Return to normal mode |
 | `Enter` | Insert | Send message |
 | `Shift+Enter` | Insert | Newline |
@@ -42,3 +42,9 @@
 | `Ctrl+c` | Any | Quit (with confirmation) |
 
 Custom keybinding overrides are on the roadmap — see [[Tradeoffs and Non-Goals|Tradeoffs-and-Non-Goals]].
+
+
+## Korean / CJK IME notes
+
+Terminal IME composition is owned by the OS and terminal emulator before input reaches `slk`. With Korean IME active, the first physical `i` may appear as pending `ㅑ` and may not be delivered to `slk` until the IME commits it. `slk` maps committed Korean jamo such as `ㅑ` back to QWERTY shortcuts when those events reach the app, and uses terminal-provided base-key metadata when available, but it cannot force the terminal to send keys that the IME is still composing.
+

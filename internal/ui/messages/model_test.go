@@ -15,6 +15,45 @@ import (
 	"github.com/gammons/slk/internal/ui/styles"
 )
 
+func TestHitTestLink_LabeledHTTPLink(t *testing.T) {
+	m := New([]MessageItem{{
+		TS:        "1700000000.000100",
+		UserName:  "alice",
+		Text:      "see <https://example.com/doc|the document> today",
+		Timestamp: "10:30 AM",
+	}}, "general")
+	_ = m.View(12, 80)
+
+	if len(m.lastLinkHits) == 0 {
+		t.Fatal("expected link hit rect for labeled HTTP link")
+	}
+	h := m.lastLinkHits[0]
+	msgIdx, gotURL, ok := m.HitTestLink(h.rowStart, h.colStart)
+	if !ok {
+		t.Fatal("expected click inside link hit rect to resolve")
+	}
+	if msgIdx != 0 {
+		t.Fatalf("msgIdx = %d, want 0", msgIdx)
+	}
+	if gotURL != "https://example.com/doc" {
+		t.Fatalf("url = %q, want https://example.com/doc", gotURL)
+	}
+}
+
+func TestHitTestLink_IgnoresMailto(t *testing.T) {
+	m := New([]MessageItem{{
+		TS:        "1700000000.000100",
+		UserName:  "alice",
+		Text:      "email <mailto:a@example.com|a@example.com>",
+		Timestamp: "10:30 AM",
+	}}, "general")
+	_ = m.View(12, 80)
+
+	if len(m.lastLinkHits) != 0 {
+		t.Fatalf("expected mailto links to be ignored for browser clicks, got %d hits", len(m.lastLinkHits))
+	}
+}
+
 func TestMessagePaneView(t *testing.T) {
 	msgs := []MessageItem{
 		{UserName: "alice", Text: "Hello world", Timestamp: "10:30 AM"},
@@ -69,7 +108,7 @@ func TestMessagePaneAppend(t *testing.T) {
 // follows the glyph verbatim.
 func TestHeaderGlyph_ByChannelType(t *testing.T) {
 	cases := []struct {
-		chType   string
+		chType    string
 		wantGlyph string
 	}{
 		{"channel", "#"},
@@ -1034,10 +1073,10 @@ func TestPatchUserName_InvalidatesCacheEvenWithNoMatchingMessages(t *testing.T) 
 func TestHitTestReaction_OnPill(t *testing.T) {
 	msgs := []MessageItem{
 		{
-			TS:       "1700000001.000000",
-			UserID:   "U1",
-			UserName: "alice",
-			Text:     "hello",
+			TS:        "1700000001.000000",
+			UserID:    "U1",
+			UserName:  "alice",
+			Text:      "hello",
 			Timestamp: "10:30 AM",
 			Reactions: []ReactionItem{
 				{Emoji: "thumbsup", Count: 1, HasReacted: false},
