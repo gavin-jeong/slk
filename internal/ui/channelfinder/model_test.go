@@ -825,3 +825,20 @@ func TestSyntheticItemMatchesByName(t *testing.T) {
 			m.items[m.filtered[0]].Name)
 	}
 }
+
+func TestSyntheticActivityRowSelectable(t *testing.T) {
+	m := New()
+	m.SetSyntheticItems([]Item{
+		{ID: ThreadsViewID, Name: "Threads", Type: "threads", Joined: true},
+		{ID: ActivityViewID, Name: "Activity", Type: "activity", Joined: true},
+	})
+	m.Open()
+	m.HandleKey("down")
+	r := m.HandleKey("enter")
+	if r == nil {
+		t.Fatal("expected selection result")
+	}
+	if r.Type != "activity" || r.ID != ActivityViewID {
+		t.Fatalf("want activity/%s, got %q/%q", ActivityViewID, r.Type, r.ID)
+	}
+}
