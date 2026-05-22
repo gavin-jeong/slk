@@ -9,6 +9,7 @@ import (
 	"github.com/gammons/slk/internal/config"
 	"github.com/gammons/slk/internal/emoji"
 	"github.com/gammons/slk/internal/ui/mentionpicker"
+	"github.com/gammons/slk/internal/ui/slashpicker"
 	"github.com/gammons/slk/internal/ui/styles"
 )
 
@@ -389,6 +390,55 @@ func TestCloseMention(t *testing.T) {
 
 	if !strings.Contains(m.Value(), "@") {
 		t.Error("expected @ to remain in text after dismiss")
+	}
+}
+
+func TestSlashTrigger_OpensAtWordBoundary(t *testing.T) {
+	m := New("general")
+	m.SetSlashCommands([]slashpicker.Command{{Name: "/invite"}, {Name: "/topic"}})
+	m.SetWidth(80)
+	m.Focus()
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	if !m.IsSlashActive() {
+		t.Fatal("expected slash picker to open on /")
+	}
+	if got := m.SlashPickerView(80); got == "" {
+		t.Fatal("expected slash picker view when active")
+	}
+}
+
+func TestSlashTrigger_SelectInsertsCommand(t *testing.T) {
+	m := New("general")
+	m.SetSlashCommands([]slashpicker.Command{{Name: "/invite"}, {Name: "/topic"}})
+	m.SetWidth(80)
+	m.Focus()
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'i', Text: "i"})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.IsSlashActive() {
+		t.Fatal("expected slash picker to close after selection")
+	}
+	if got := m.Value(); got != "/invite " {
+		t.Fatalf("expected slash command inserted, got %q", got)
+	}
+}
+
+func TestSlashTrigger_BackspaceClosesWhenTriggerDeleted(t *testing.T) {
+	m := New("general")
+	m.SetSlashCommands([]slashpicker.Command{{Name: "/invite"}})
+	m.SetWidth(80)
+	m.Focus()
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	if !m.IsSlashActive() {
+		t.Fatal("expected slash picker to open")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if m.IsSlashActive() {
+		t.Fatal("expected slash picker to close after deleting /")
 	}
 }
 

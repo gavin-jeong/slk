@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -528,6 +529,15 @@ type HistorySinceResult struct {
 	Capped   bool
 }
 
+type SlashCommand struct {
+	Command     string
+	Description string
+	UsageHint   string
+	Type        string
+	AppID       string
+	AppName     string
+}
+
 // GetHistorySince fetches all messages newer than `oldest` for the
 // given channel, paginating through next_cursor up to a hard ceiling
 // of maxTotal messages. Slack returns messages newest-first per page;
@@ -640,6 +650,160 @@ func (c *Client) SendMessage(ctx context.Context, channelID, text string) (strin
 		return "", "", fmt.Errorf("sending message: %w", err)
 	}
 	return ts, mr, nil
+}
+
+func (c *Client) ExecuteSlashCommand(ctx context.Context, channelID, text string) error {
+	command, args, ok := splitSlashCommand(text)
+	if channelID == "" {
+		return fmt.Errorf("executing slash command: missing channel")
+	}
+	if !ok {
+		return fmt.Errorf("executing slash command: invalid command")
+	}
+
+	form := url.Values{
+		"channel": {channelID},
+		"command": {command},
+		"text":    {args},
+	}
+	if meta, err := c.lookupSlashCommand(ctx, command); err == nil {
+		if meta.AppID != "" {
+			form.Set("app", meta.AppID)
+		}
+		if meta.Type != "" {
+			form.Set("type", meta.Type)
+		}
+	}
+
+	body, err := c.postForm(ctx, "chat.command", form)
+	if err != nil {
+		return fmt.Errorf("executing slash command: %w", err)
+	}
+
+	var resp struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("parsing chat.command response: %w (body=%q)", err, truncateForLog(body))
+	}
+	if !resp.OK {
+		if resp.Error == "" {
+			resp.Error = "unknown_error"
+		}
+		return fmt.Errorf("chat.command: %s", resp.Error)
+	}
+	return nil
+}
+
+func (c *Client) lookupSlashCommand(ctx context.Context, command string) (SlashCommand, error) {
+	commands, err := c.ListSlashCommands(ctx)
+	if err != nil {
+		return SlashCommand{}, err
+	}
+	for _, item := range commands {
+		if item.Command == command {
+			return item, nil
+		}
+	}
+	return SlashCommand{}, fmt.Errorf("command not found")
+}
+
+func splitSlashCommand(text string) (command, args string, ok bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "/") || len(trimmed) == 1 {
+		return "", "", false
+	}
+	for i, r := range trimmed {
+		if i == 0 {
+			continue
+		}
+		if r == ' ' || r == '\t' || r == '\n' {
+			return trimmed[:i], strings.TrimSpace(trimmed[i:]), true
+		}
+	}
+	return trimmed, "", true
+}
+
+func (c *Client) ListSlashCommands(ctx context.Context) ([]SlashCommand, error) {
+	body, err := c.postForm(ctx, "commands.list", nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing slash commands: %w", err)
+	}
+
+	var resp struct {
+		OK       bool                       `json:"ok"`
+		Error    string                     `json:"error"`
+		Commands map[string]json.RawMessage `json:"commands"`
+		CacheTS  json.RawMessage            `json:"cache_ts"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("parsing commands.list response: %w (body=%q)", err, truncateForLog(body))
+	}
+	if !resp.OK {
+		if resp.Error == "" {
+			resp.Error = "unknown_error"
+		}
+		return nil, fmt.Errorf("commands.list: %s", resp.Error)
+	}
+
+	type commandEntry struct {
+		Command     string `json:"command"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		UsageHint   string `json:"usage_hint"`
+		ArgHint     string `json:"arg_hint"`
+		Hint        string `json:"hint"`
+		Desc        string `json:"desc"`
+		Usage       string `json:"usage"`
+		Type        string `json:"type"`
+		AppID       string `json:"app"`
+		AppName     string `json:"app_name"`
+	}
+
+	commands := make([]SlashCommand, 0, len(resp.Commands))
+	for key, raw := range resp.Commands {
+		entry := commandEntry{}
+		if len(raw) > 0 && string(raw) != "null" {
+			if err := json.Unmarshal(raw, &entry); err != nil {
+				entry.Command = key
+			}
+		}
+		name := entry.Command
+		if name == "" {
+			name = entry.Name
+		}
+		if name == "" {
+			name = key
+		}
+		if name == "" {
+			continue
+		}
+		hint := entry.UsageHint
+		if hint == "" {
+			hint = entry.ArgHint
+		}
+		if hint == "" {
+			hint = entry.Hint
+		}
+		if hint == "" {
+			hint = entry.Usage
+		}
+		description := entry.Description
+		if description == "" {
+			description = entry.Desc
+		}
+		commands = append(commands, SlashCommand{
+			Command:     name,
+			Description: description,
+			UsageHint:   hint,
+			Type:        entry.Type,
+			AppID:       entry.AppID,
+			AppName:     entry.AppName,
+		})
+	}
+	sort.Slice(commands, func(i, j int) bool { return commands[i].Command < commands[j].Command })
+	return commands, nil
 }
 
 // UploadFile uploads a single file to a channel (and optional thread)

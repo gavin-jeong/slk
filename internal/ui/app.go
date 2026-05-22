@@ -38,6 +38,7 @@ import (
 	"github.com/gammons/slk/internal/ui/presencemenu"
 	"github.com/gammons/slk/internal/ui/reactionpicker"
 	"github.com/gammons/slk/internal/ui/sidebar"
+	"github.com/gammons/slk/internal/ui/slashpicker"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
 	"github.com/gammons/slk/internal/ui/themeswitcher"
@@ -135,6 +136,10 @@ type (
 		Message   messages.MessageItem
 	}
 	SendMessageMsg struct {
+		ChannelID string
+		Text      string
+	}
+	SlashCommandMsg struct {
 		ChannelID string
 		Text      string
 	}
@@ -247,6 +252,10 @@ type (
 		DisplayName string
 		IsBot       bool
 	}
+	WorkspaceUserNamesUpdatedMsg struct {
+		TeamID    string
+		UserNames map[string]string
+	}
 	// UserExternalMsg flags a single user as external (Slack Connect /
 	// shared-channel guest). Emitted by the user-resolution path when a
 	// users.info response shows team_id != workspace TeamID. The App
@@ -271,6 +280,7 @@ type (
 		ExternalUsers map[string]bool
 		UserID        string
 		CustomEmoji   map[string]string
+		SlashCommands []slashpicker.Command
 		// SectionsProvider supplies Slack-native sidebar sections for this
 		// workspace. Nil means "use config-glob behavior" (the App's
 		// sidebar reverts to its existing name-keyed buckets).
@@ -330,6 +340,7 @@ type (
 		ExternalUsers map[string]bool
 		UserID        string
 		CustomEmoji   map[string]string
+		SlashCommands []slashpicker.Command
 		// SectionsProvider supplies Slack-native sidebar sections for this
 		// workspace. Nil means "use config-glob behavior" (the App's
 		// sidebar reverts to its existing name-keyed buckets).
@@ -387,7 +398,8 @@ type (
 	// ToastMsg sets a transient string in the status bar's toast slot. Used
 	// for short error notices (e.g. failed status change). Auto-clears after
 	// 3 seconds via a CopiedClearMsg tick scheduled by the App.
-	ToastMsg struct{ Text string }
+	ToastMsg                struct{ Text string }
+	SlashCommandExecutedMsg struct{ Text string }
 )
 
 type loadingEntry struct {
@@ -499,6 +511,8 @@ type OlderMessagesFetchFunc func(channelID, oldestTS string) tea.Msg
 
 // MessageSendFunc is called when the user sends a message. Returns a tea.Msg with the result.
 type MessageSendFunc func(channelID, text string) tea.Msg
+
+type SlashCommandFunc func(channelID, text string) tea.Msg
 
 // MessageSentMsg is returned after a message is successfully sent.
 // LocalTS, if non-empty, identifies the optimistic placeholder added
@@ -782,6 +796,7 @@ type App struct {
 	// Current context
 	activeChannelID string
 	activeTeamID    string // workspace whose data is currently loaded into the side panels
+	pendingTopKey   bool
 
 	// bootstrapActiveClaimed flips on the first WorkspaceReadyMsg whose
 	// InitialActive=true is observed. Subsequent InitialActive=true
@@ -807,6 +822,7 @@ type App struct {
 	channelSyncedAtReader func(channelID string) int64
 	olderMessagesFetcher  OlderMessagesFetchFunc
 	messageSender         MessageSendFunc
+	slashCommandRunner    SlashCommandFunc
 	messageEditor         MessageEditFunc
 	messageDeleter        MessageDeleteFunc
 	messageMarkUnreader   MarkUnreadFunc
@@ -1997,6 +2013,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, func() tea.Msg { return ActivityListDirtyMsg{TeamID: team} })
 		}
 
+	case SlashCommandMsg:
+		if a.slashCommandRunner != nil {
+			runner := a.slashCommandRunner
+			chID, text := msg.ChannelID, msg.Text
+			cmds = append(cmds, func() tea.Msg { return runner(chID, text) })
+		}
+
 	case SendMessageMsg:
 		// Mark in-flight regardless of whether a sender is wired —
 		// the user's send intent is what controls WS-echo suppression
@@ -2463,6 +2486,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// in-history name patch. IsBot is carried for forward
 		// compatibility but not consumed here.
 
+	case WorkspaceUserNamesUpdatedMsg:
+		if msg.TeamID != a.activeTeamID {
+			break
+		}
+		a.SetUserNames(msg.UserNames)
+		return a, nil
+
 	case UserExternalMsg:
 		if a.externalUsers == nil {
 			a.externalUsers = map[string]bool{}
@@ -2523,6 +2553,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.SetExternalUsers(msg.ExternalUsers)
 		a.SetUserNames(msg.UserNames)
 		a.SetCustomEmoji(msg.CustomEmoji)
+		a.SetSlashCommands(msg.SlashCommands)
 		a.currentUserID = msg.UserID
 		a.activeTeamID = msg.TeamID
 		if st, ok := a.statusByTeam[a.activeTeamID]; ok {
@@ -2668,6 +2699,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.SetExternalUsers(msg.ExternalUsers)
 			a.SetUserNames(msg.UserNames)
 			a.SetCustomEmoji(msg.CustomEmoji)
+			a.SetSlashCommands(msg.SlashCommands)
 			a.currentUserID = msg.UserID
 			a.activeTeamID = msg.TeamID
 			if st, ok := a.statusByTeam[a.activeTeamID]; ok {
@@ -2814,6 +2846,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// from a DND'd workspace). Stop the chain.
 			a.dndTickerOn = false
 		}
+
+	case SlashCommandExecutedMsg:
+		a.learnSlashCommand(msg.Text)
+		a.statusbar.SetToast("Command sent")
+		cmds = append(cmds, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
+			return statusbar.CopiedClearMsg{}
+		}))
 
 	case ToastMsg:
 		a.statusbar.SetToast(msg.Text)
@@ -3133,6 +3172,24 @@ var koreanIMEQWERTY = map[rune]string{
 }
 
 func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
+	if key.Matches(msg, a.keys.Top) {
+		if a.pendingTopKey {
+			a.pendingTopKey = false
+			if cmd := a.handleGoToTop(); cmd != nil {
+				return cmd
+			}
+		} else {
+			a.pendingTopKey = true
+		}
+		return nil
+	}
+	if msg.String() == ":" || (msg.Key().Code == ':' && msg.Key().Text == ":") {
+		a.SetMode(ModeCommand)
+		return nil
+	}
+	if a.pendingTopKey {
+		a.pendingTopKey = false
+	}
 	// Reaction-nav sub-state (intercept before normal keys)
 	if a.focusedPanel == PanelMessages && a.messagepane.ReactionNavActive() {
 		return a.handleReactionNav(msg)
@@ -3345,6 +3402,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 				a.threadCompose.CloseChannel()
 				return nil
 			}
+			if a.threadCompose.IsSlashActive() {
+				a.threadCompose.CloseSlash()
+				return nil
+			}
 		} else {
 			if a.compose.IsEmojiActive() {
 				a.compose.CloseEmoji()
@@ -3356,6 +3417,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 			}
 			if a.compose.IsChannelActive() {
 				a.compose.CloseChannel()
+				return nil
+			}
+			if a.compose.IsSlashActive() {
+				a.compose.CloseSlash()
 				return nil
 			}
 		}
@@ -3377,6 +3442,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 				a.threadCompose.CloseChannel()
 				return nil
 			}
+			if a.threadCompose.IsSlashActive() {
+				a.threadCompose.CloseSlash()
+				return nil
+			}
 		} else {
 			if a.compose.IsEmojiActive() {
 				a.compose.CloseEmoji()
@@ -3388,6 +3457,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 			}
 			if a.compose.IsChannelActive() {
 				a.compose.CloseChannel()
+				return nil
+			}
+			if a.compose.IsSlashActive() {
+				a.compose.CloseSlash()
 				return nil
 			}
 		}
@@ -3403,8 +3476,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 
 	code := msg.Key().Code
 	mod := msg.Key().Mod
-	isPaste := code == 'v' && mod == tea.ModCtrl
-	if isPaste {
+	if isCtrlV(msg) {
 		return a.smartPaste()
 	}
 	if key.Matches(msg, a.keys.AttachFile) {
@@ -3441,7 +3513,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	// let it own Up/Down so users can navigate the suggestion list. Without
 	// this guard, the jump-to-start/end shortcuts below swallow the arrow
 	// keys before the picker ever sees them.
-	pickerActive := target.IsEmojiActive() || target.IsMentionActive() || target.IsChannelActive()
+	pickerActive := target.IsEmojiActive() || target.IsMentionActive() || target.IsChannelActive() || target.IsSlashActive()
 	if !pickerActive {
 		if code == tea.KeyUp && mod == 0 && target.CursorAtFirstLine() {
 			target.MoveCursorToStart()
@@ -3469,7 +3541,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	// Determine which compose box is active based on focused panel
 	if a.focusedPanel == PanelThread && a.threadVisible {
 		// If a picker is active, forward all keys to compose (including Enter).
-		if a.threadCompose.IsEmojiActive() || a.threadCompose.IsMentionActive() || a.threadCompose.IsChannelActive() {
+		if a.threadCompose.IsEmojiActive() || a.threadCompose.IsMentionActive() || a.threadCompose.IsChannelActive() || a.threadCompose.IsSlashActive() {
 			var cmd tea.Cmd
 			a.threadCompose, cmd = a.threadCompose.Update(msg)
 			return cmd
@@ -3499,6 +3571,14 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 				threadTS := a.threadPanel.ThreadTS()
 				channelID := a.threadPanel.ChannelID()
 				a.exitInsertAfterSend()
+				if isSlashCommandText(text) {
+					return func() tea.Msg {
+						return SlashCommandMsg{
+							ChannelID: channelID,
+							Text:      text,
+						}
+					}
+				}
 				return func() tea.Msg {
 					return SendThreadReplyMsg{
 						ChannelID: channelID,
@@ -3517,7 +3597,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 
 	// Channel message compose
 	// If a picker is active, forward all keys to compose (including Enter).
-	if a.compose.IsEmojiActive() || a.compose.IsMentionActive() || a.compose.IsChannelActive() {
+	if a.compose.IsEmojiActive() || a.compose.IsMentionActive() || a.compose.IsChannelActive() || a.compose.IsSlashActive() {
 		var cmd tea.Cmd
 		a.compose, cmd = a.compose.Update(msg)
 		return cmd
@@ -3544,6 +3624,14 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 			text = a.compose.TranslateMentionsForSend(text)
 			a.compose.Reset()
 			a.exitInsertAfterSend()
+			if isSlashCommandText(text) {
+				return func() tea.Msg {
+					return SlashCommandMsg{
+						ChannelID: a.activeChannelID,
+						Text:      text,
+					}
+				}
+			}
 			return func() tea.Msg {
 				return SendMessageMsg{
 					ChannelID: a.activeChannelID,
@@ -4209,6 +4297,37 @@ func (a *App) handleUp() tea.Cmd {
 		}
 	case PanelThread:
 		a.threadPanel.MoveUp()
+	}
+	return nil
+}
+
+func (a *App) handleGoToTop() tea.Cmd {
+	switch a.focusedPanel {
+	case PanelSidebar:
+		a.sidebar.GoToTop()
+	case PanelMessages:
+		if a.view == ViewThreads {
+			a.threadsView.GoToTop()
+			return a.openSelectedThreadCmd(false)
+		}
+		a.messagepane.GoToTop()
+		if a.messagepane.AtTop() && !a.fetchingOlder && a.olderMessagesFetcher != nil {
+			a.fetchingOlder = true
+			a.messagepane.SetLoading(true)
+			chID := a.activeChannelID
+			oldestTS := a.messagepane.OldestTS()
+			fetcher := a.olderMessagesFetcher
+			return tea.Batch(
+				tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+					return SpinnerTickMsg{}
+				}),
+				func() tea.Msg {
+					return fetcher(chID, oldestTS)
+				},
+			)
+		}
+	case PanelThread:
+		a.threadPanel.GoToTop()
 	}
 	return nil
 }
@@ -4893,6 +5012,10 @@ func (a *App) SetMessageSender(fn MessageSendFunc) {
 	a.messageSender = fn
 }
 
+func (a *App) SetSlashCommandRunner(fn SlashCommandFunc) {
+	a.slashCommandRunner = fn
+}
+
 // SetMessageEditor wires the chat.update callback used by edit submit.
 func (a *App) SetMessageEditor(fn MessageEditFunc) {
 	a.messageEditor = fn
@@ -5364,6 +5487,11 @@ func (a *App) SetCustomEmoji(customs map[string]string) {
 	if a.reactionPicker != nil {
 		a.reactionPicker.SetCustomEmoji(customs)
 	}
+}
+
+func (a *App) SetSlashCommands(commands []slashpicker.Command) {
+	a.compose.SetSlashCommands(commands)
+	a.threadCompose.SetSlashCommands(commands)
 }
 
 // SetInitialChannel sets the active channel and its messages before the TUI starts.
@@ -5964,6 +6092,8 @@ func (a *App) View() tea.View {
 		} else if channelView := a.compose.ChannelPickerView(msgWidth - 2); channelView != "" {
 			composeCursorYOffset = lipgloss.Height(channelView)
 			composeView = channelView + "\n" + composeView
+		} else if slashView := a.compose.SlashPickerView(msgWidth - 2); slashView != "" {
+			composeView = slashView + "\n" + composeView
 		}
 		// Add a background-colored spacer line above the compose box
 		// (replaces MarginTop which produced unstyled/black margin cells)
@@ -6070,6 +6200,8 @@ func (a *App) View() tea.View {
 		} else if channelView := a.threadCompose.ChannelPickerView(threadWidth - 2); channelView != "" {
 			threadComposeCursorYOffset = lipgloss.Height(channelView)
 			threadComposeView = channelView + "\n" + threadComposeView
+		} else if slashView := a.threadCompose.SlashPickerView(threadWidth - 2); slashView != "" {
+			threadComposeView = slashView + "\n" + threadComposeView
 		}
 		threadComposeSpacer := lipgloss.NewStyle().Background(styles.Background).Width(threadWidth - 2).Render("")
 		threadComposeView = threadComposeSpacer + "\n" + threadComposeView
@@ -6754,6 +6886,45 @@ func resolveFilePath(text string) (string, bool) {
 		return "", false
 	}
 	return filepath.Clean(s), true
+}
+
+func isSlashCommandText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "/") && len(trimmed) > 1
+}
+
+func (a *App) learnSlashCommand(text string) {
+	trimmed := strings.TrimSpace(text)
+	if !isSlashCommandText(trimmed) {
+		return
+	}
+	name := trimmed
+	if i := strings.IndexAny(trimmed, " \t\n"); i >= 0 {
+		name = trimmed[:i]
+	}
+	if name == "" {
+		return
+	}
+
+	existing := a.compose.SlashCommands()
+	for _, cmd := range existing {
+		if cmd.Name == name {
+			return
+		}
+	}
+
+	updated := make([]slashpicker.Command, 0, len(existing)+1)
+	updated = append(updated, slashpicker.Command{Name: name})
+	updated = append(updated, existing...)
+	a.SetSlashCommands(updated)
+}
+
+func isCtrlV(msg tea.KeyMsg) bool {
+	keyEvent := msg.Key()
+	if (keyEvent.Code == 'v' || keyEvent.Code == 'V' || keyEvent.BaseCode == 'v' || keyEvent.BaseCode == 'V') && keyEvent.Mod.Contains(tea.ModCtrl) {
+		return true
+	}
+	return msg.String() == "ctrl+v" || keyEvent.Keystroke() == "ctrl+v"
 }
 
 // uploadToastCmd builds a tea.Cmd that sets the status bar to the
