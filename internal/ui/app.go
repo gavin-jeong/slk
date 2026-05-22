@@ -3524,8 +3524,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 	}
-	// Plain Enter sends; Shift+Enter (and Ctrl+J as a fallback for terminals
-	// Plain Enter sends; modified Enter variants insert a newline.
+	// Plain Enter sends. Ctrl+Enter also sends when the terminal reports it
+	// distinctly, which gives IME users a send key that is less likely to be
+	// consumed as composition commit. Shift/Alt+Enter, backslash+Enter, and
+	// Ctrl+J insert a newline.
 	keystroke := msg.Key().Keystroke()
 	stringForm := msg.String()
 	isModifiedEnter := stringForm == "shift+enter" || keystroke == "shift+enter" || stringForm == "shift+return" || keystroke == "shift+return" || stringForm == "alt+enter" || keystroke == "alt+enter" || stringForm == "alt+return" || keystroke == "alt+return"
