@@ -1174,10 +1174,10 @@ func (m *Model) View(height, width int) string {
 			Background(styles.Background).
 			Foreground(styles.Border).
 			Render(strings.Repeat("-", width))
-		// v1: discard parent flushes — parent attachments are rare
-		// in the chrome-cached path and threading kitty flushes through
-		// the chromeCache lifecycle adds complexity. Reply flushes are
-		// captured below in the per-reply cache loop.
+			// v1: discard parent flushes — parent attachments are rare
+			// in the chrome-cached path and threading kitty flushes through
+			// the chromeCache lifecycle adds complexity. Reply flushes are
+			// captured below in the per-reply cache loop.
 		parentContent, _, _, parentLinkHits := m.renderThreadMessage(m.parent, width, m.userNames, m.channelNames, false)
 		m.chromeCache = header + "\n" + separator + "\n" + parentContent + "\n" + separator
 		m.chromeLinkHits = parentChromeLinkHits(parentLinkHits)

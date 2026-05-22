@@ -10,6 +10,13 @@ default_workspace = "work"      # the slug, not the team ID
 use_slack_sections = true       # use real Slack sidebar sections (default).
                                 # set false to use [sections.*] globs instead.
 
+[general.ime]
+auto_switch = false             # optional: switch input source on modal changes
+normal_input_source = "com.apple.keylayout.ABC"
+switcher_command = ""           # auto-detect macism, then im-select
+restore_insert = true            # restore previous IME when entering insert mode
+timeout_ms = 200
+
 [appearance]
 theme = "dracula"
 timestamp_format = "3:04 PM"
@@ -70,6 +77,23 @@ accent = "#50C878"
 background = "#1A1A2E"
 text = "#E0E0E0"
 ```
+
+## IME auto-switching
+
+For Korean/CJK IME users, terminal preedit can consume normal-mode alphabetic shortcuts before `slk` receives them. Optional IME auto-switching mirrors common Vim workflows: when leaving insert mode, `slk` remembers the current input source and switches to an ASCII source; when entering insert mode again, it restores the remembered input source.
+
+Install a local switcher such as `macism` or `im-select`, then enable:
+
+```toml
+[general.ime]
+auto_switch = true
+normal_input_source = "com.apple.keylayout.ABC"
+switcher_command = "macism" # or "im-select"; empty auto-detects
+restore_insert = true
+timeout_ms = 200
+```
+
+Run the switcher with no arguments to see the current input source ID. If the command is missing or fails, `slk` logs the failure and continues without auto-switching. This works where the configured command can control the local desktop input source; remote SSH sessions usually need a command that runs on the local machine.
 
 ## Section resolution
 
