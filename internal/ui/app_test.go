@@ -2453,6 +2453,64 @@ func TestUploadResultMsg_FailureKeepsAttachments(t *testing.T) {
 	}
 }
 
+func TestOpenFilePickerFromInsertMode(t *testing.T) {
+	app := NewApp()
+	app.SetMode(ModeInsert)
+	app.focusedPanel = PanelMessages
+	_ = app.compose.Focus()
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'a', Mod: tea.ModCtrl})
+
+	if app.mode != ModeFilePicker {
+		t.Fatalf("expected ModeFilePicker, got %v", app.mode)
+	}
+	if !app.filePicker.IsVisible() {
+		t.Fatal("expected file picker visible")
+	}
+}
+
+func TestAttachFileToActiveComposeAddsPendingAttachment(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "doc.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.focusedPanel = PanelMessages
+
+	cmd := app.attachFileToActiveCompose(path)
+	if cmd == nil {
+		t.Fatal("expected toast cmd")
+	}
+	atts := app.compose.Attachments()
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(atts))
+	}
+	if atts[0].Path != path {
+		t.Fatalf("expected path %q, got %q", path, atts[0].Path)
+	}
+}
+
+func TestHandleInsertMode_RemoveSelectedAttachment(t *testing.T) {
+	app := NewApp()
+	app.SetMode(ModeInsert)
+	app.focusedPanel = PanelMessages
+	_ = app.compose.Focus()
+	app.compose.AddAttachment(compose.PendingAttachment{Filename: "a.png", Size: 1})
+	app.compose.AddAttachment(compose.PendingAttachment{Filename: "b.png", Size: 2})
+
+	app.handleInsertMode(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
+	app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyDelete})
+
+	atts := app.compose.Attachments()
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment after delete, got %d", len(atts))
+	}
+	if atts[0].Filename != "b.png" {
+		t.Fatalf("expected b.png to remain, got %q", atts[0].Filename)
+	}
+}
+
 func TestEscDuringUpload_RefusedWithToast(t *testing.T) {
 	app := NewApp()
 	app.SetMode(ModeInsert)
