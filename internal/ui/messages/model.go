@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -141,6 +142,11 @@ type viewEntry struct {
 	// Model.lastReactionHits per frame so the app-level mouse handler
 	// can route clicks to a toggle-reaction command.
 	reactionHits []reactionEntryHit
+
+	// linkHits records rendered OSC 8 http(s) hyperlinks in linesNormal.
+	// View translates these to viewport coordinates so Bubble Tea mouse
+	// capture can open links even when the terminal cannot handle OSC 8.
+	linkHits []linkEntryHit
 }
 
 // reactionEntryHit is one reaction-pill hit-rect, expressed in
@@ -153,6 +159,14 @@ type reactionEntryHit struct {
 	colStart        int
 	colEnd          int // exclusive
 	emoji           string
+}
+
+type linkEntryHit struct {
+	rowStartInEntry int
+	rowEndInEntry   int // exclusive
+	colStart        int
+	colEnd          int // exclusive
+	url             string
 }
 
 // entryHit is one inline-image hit-rect, expressed in coordinates
@@ -199,6 +213,15 @@ type reactionHitRect struct {
 	emoji    string
 }
 
+type linkHitRect struct {
+	rowStart int
+	rowEnd   int // exclusive
+	colStart int
+	colEnd   int // exclusive
+	msgIdx   int
+	url      string
+}
+
 // sixelEntry holds the pre-computed sixel bytes for one inline image,
 // plus the halfblock fallback used when the image is only partially
 // visible (Phase 6 cannot emit a half-image with sixel).
@@ -226,7 +249,7 @@ type Model struct {
 	channelTopic string
 	channelType  string // "channel", "private", "dm", "group_dm" -- drives header glyph
 	loading      bool
-	spinnerFrame int // braille-spinner frame index for "Loading messages..." animation
+	spinnerFrame int               // braille-spinner frame index for "Loading messages..." animation
 	avatarFn     AvatarFunc        // optional: returns half-block avatar for a userID
 	userNames    map[string]string // user ID -> display name for mention resolution
 	channelNames map[string]string // channel ID -> name for bare <#CID> resolution
@@ -234,11 +257,11 @@ type Model struct {
 	// Render cache -- invalidated when messages or width change.
 	// Each entry holds pre-bordered variants so selection movement does not
 	// re-invoke lipgloss per keypress.
-	cache       []viewEntry
-	cacheWidth  int
-	cacheMsgLen int
-	cacheSpacer       string // pre-rendered blank spacer line (1 row, full width, themed background)
-	cacheMoreBelow    string // pre-rendered "-- more below --" line
+	cache          []viewEntry
+	cacheWidth     int
+	cacheMsgLen    int
+	cacheSpacer    string // pre-rendered blank spacer line (1 row, full width, themed background)
+	cacheMoreBelow string // pre-rendered "-- more below --" line
 
 	// Chrome cache: header line(s). Depends on width, channelName, and
 	// channelTopic only -- never on selection or scroll position.
@@ -332,6 +355,11 @@ type Model struct {
 	// HitTestReaction so the app-level mouse handler can toggle a
 	// reaction when the user clicks a pill.
 	lastReactionHits []reactionHitRect
+
+	// lastLinkHits holds http(s) hyperlink hit rects captured during the
+	// most recent View() call, in the same viewport-absolute coordinate
+	// frame as lastHits.
+	lastLinkHits []linkHitRect
 
 	// focused tracks whether this panel currently has user focus. When
 	// false, the selected-message "▌" border dims from Accent to
@@ -1305,6 +1333,31 @@ func (m *Model) renderLoadingOlderHint(_ int) string {
 	return hintStyle.Render("  " + string(frame) + " Loading older messages...")
 }
 
+func (m *Model) messageTextLinkHits(msg MessageItem, width int, avatarStr string) []linkEntryHit {
+	contentWidth := width - 4
+	contentColBase := 1
+	if avatarStr != "" {
+		contentWidth = width - 7
+		contentColBase += 5
+	}
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	wrapped := WordWrap(RenderSlackMarkdown(MessageTextSource(msg), m.userNames, m.channelNames), contentWidth)
+	hits := linkEntryHitsFromLines(strings.Split(wrapped, "\n"))
+	rowBase := 1 // username + timestamp row
+	if msg.Subtype == "thread_broadcast" {
+		rowBase++
+	}
+	for i := range hits {
+		hits[i].rowStartInEntry += rowBase
+		hits[i].rowEndInEntry += rowBase
+		hits[i].colStart += contentColBase
+		hits[i].colEnd += contentColBase
+	}
+	return hits
+}
+
 // renderMessageEntry builds a single viewEntry for m.messages[i] using
 // the shared cacheStyles. The returned entry is fully populated with
 // both the unselected and selected pre-bordered line slices, the
@@ -1350,6 +1403,7 @@ func (m *Model) renderMessageEntry(i int, width int, cs cacheStyles) viewEntry {
 	// bleeds into clipboard output via SelectionText. The mouse-column
 	// to plain-column mapping happens in anchorAt via contentColOffset.
 	linesP := plainLines(filledNormal)
+	linkHits := m.messageTextLinkHits(msg, width, avatarStr)
 	// Append a trailing spacer line after every message except the last.
 	// Both variants share the same spacer (it has no border styling).
 	// The plain mirror of the spacer is the empty string -- selection
@@ -1371,6 +1425,7 @@ func (m *Model) renderMessageEntry(i int, width int, cs cacheStyles) viewEntry {
 		sixelRows:        attachSixel,
 		imageHits:        attachHits,
 		reactionHits:     reactHits,
+		linkHits:         linkHits,
 	}
 }
 
@@ -1706,7 +1761,7 @@ func (m *Model) renderMessagePlain(msg MessageItem, width int, avatarStr string,
 		broadcastLabel = styles.Timestamp.Render("\u21b3 replied to a thread") + "\n"
 		preAttachmentRows++ // the broadcast label occupies its own row
 	}
-	preAttachmentRows++                       // username + ts row
+	preAttachmentRows++                        // username + ts row
 	preAttachmentRows += lipgloss.Height(text) // wrapped body text
 
 	// contentColBase is the display column at which message content
@@ -1864,8 +1919,6 @@ func (m *Model) renderMessagePlain(msg MessageItem, width int, avatarStr string,
 	return msgContent, allFlushes, allSixel, hits, reactionHits
 }
 
-
-
 // placeAvatarBeside renders the avatar to the left of the message content.
 // The avatar is 4 cols wide, 2 rows tall. Message content flows to the right.
 func placeAvatarBeside(avatar, content string) string {
@@ -2004,6 +2057,125 @@ func (m *Model) HitTestReaction(row, col int) (msgIdx int, emoji string, ok bool
 		}
 	}
 	return 0, "", false
+}
+
+// HitTestLink returns the message index and http(s) URL rendered at (row, col),
+// or ok=false when no hyperlink covers that cell. Coordinate frame mirrors
+// HitTest: row is within the messages-pane content area with chrome stripped.
+func (m *Model) HitTestLink(row, col int) (msgIdx int, url string, ok bool) {
+	for _, h := range m.lastLinkHits {
+		if row >= h.rowStart && row < h.rowEnd && col >= h.colStart && col < h.colEnd {
+			return h.msgIdx, h.url, true
+		}
+	}
+	return 0, "", false
+}
+
+// LinkSpan is a rendered http(s) hyperlink footprint in a set of rendered lines.
+type LinkSpan struct {
+	RowStart, RowEnd int
+	ColStart, ColEnd int
+	URL              string
+}
+
+// HTTPLinkSpansFromLines extracts OSC 8 http(s) hyperlink spans from rendered
+// lines. Non-browser targets such as mailto: are intentionally ignored.
+func HTTPLinkSpansFromLines(lines []string) []LinkSpan {
+	entryHits := linkEntryHitsFromLines(lines)
+	out := make([]LinkSpan, 0, len(entryHits))
+	for _, h := range entryHits {
+		out = append(out, LinkSpan{
+			RowStart: h.rowStartInEntry,
+			RowEnd:   h.rowEndInEntry,
+			ColStart: h.colStart,
+			ColEnd:   h.colEnd,
+			URL:      h.url,
+		})
+	}
+	return out
+}
+
+func linkEntryHitsFromLines(lines []string) []linkEntryHit {
+	var hits []linkEntryHit
+	for row, line := range lines {
+		activeURL := ""
+		col := 0
+		for i := 0; i < len(line); {
+			if strings.HasPrefix(line[i:], "\x1b]8;;") {
+				url, next, ok := parseOSC8(line, i)
+				if ok {
+					if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+						activeURL = url
+					} else {
+						activeURL = ""
+					}
+					i = next
+					continue
+				}
+			}
+			if line[i] == '\x1b' {
+				i = skipEscape(line, i)
+				continue
+			}
+			r, size := utf8.DecodeRuneInString(line[i:])
+			if r == utf8.RuneError && size == 0 {
+				break
+			}
+			w := ansi.StringWidth(string(r))
+			if w > 0 && activeURL != "" {
+				if len(hits) > 0 {
+					last := &hits[len(hits)-1]
+					if last.url == activeURL && last.rowStartInEntry == row && last.rowEndInEntry == row+1 && last.colEnd == col {
+						last.colEnd = col + w
+					} else {
+						hits = append(hits, linkEntryHit{rowStartInEntry: row, rowEndInEntry: row + 1, colStart: col, colEnd: col + w, url: activeURL})
+					}
+				} else {
+					hits = append(hits, linkEntryHit{rowStartInEntry: row, rowEndInEntry: row + 1, colStart: col, colEnd: col + w, url: activeURL})
+				}
+			}
+			col += w
+			i += size
+		}
+	}
+	return hits
+}
+
+func parseOSC8(s string, start int) (url string, next int, ok bool) {
+	const prefix = "\x1b]8;;"
+	i := start + len(prefix)
+	if end := strings.IndexByte(s[i:], '\a'); end >= 0 {
+		return s[i : i+end], i + end + 1, true
+	}
+	if end := strings.Index(s[i:], "\x1b\\"); end >= 0 {
+		return s[i : i+end], i + end + 2, true
+	}
+	return "", start + 1, false
+}
+
+func skipEscape(s string, start int) int {
+	if start+1 >= len(s) {
+		return start + 1
+	}
+	switch s[start+1] {
+	case '[':
+		for i := start + 2; i < len(s); i++ {
+			if s[i] >= 0x40 && s[i] <= 0x7e {
+				return i + 1
+			}
+		}
+		return len(s)
+	case ']':
+		if end := strings.IndexByte(s[start+2:], '\a'); end >= 0 {
+			return start + 2 + end + 1
+		}
+		if end := strings.Index(s[start+2:], "\x1b\\"); end >= 0 {
+			return start + 2 + end + 2
+		}
+		return len(s)
+	default:
+		return start + 2
+	}
 }
 
 var thickLeftBorder = lipgloss.Border{Left: "▌"}
@@ -2446,6 +2618,7 @@ func (m *Model) View(height, width int) string {
 	// array without reallocation.
 	m.lastHits = m.lastHits[:0]
 	m.lastReactionHits = m.lastReactionHits[:0]
+	m.lastLinkHits = m.lastLinkHits[:0]
 
 	visible := make([]string, 0, msgAreaHeight)
 	want := msgAreaHeight
@@ -2571,6 +2744,30 @@ func (m *Model) View(height, width int) string {
 				colEnd:   h.colEnd,
 				msgIdx:   e.msgIdx,
 				emoji:    h.emoji,
+			})
+		}
+
+		for _, h := range e.linkHits {
+			absStart := entryStart + h.rowStartInEntry
+			absEnd := entryStart + h.rowEndInEntry
+			if absEnd <= m.yOffset || absStart >= m.yOffset+msgAreaHeight {
+				continue
+			}
+			clipStart := absStart - m.yOffset
+			if clipStart < 0 {
+				clipStart = 0
+			}
+			clipEnd := absEnd - m.yOffset
+			if clipEnd > msgAreaHeight {
+				clipEnd = msgAreaHeight
+			}
+			m.lastLinkHits = append(m.lastLinkHits, linkHitRect{
+				rowStart: clipStart,
+				rowEnd:   clipEnd,
+				colStart: h.colStart,
+				colEnd:   h.colEnd,
+				msgIdx:   e.msgIdx,
+				url:      h.url,
 			})
 		}
 
