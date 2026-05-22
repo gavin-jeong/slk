@@ -694,9 +694,9 @@ type ChannelJoinFailedMsg struct {
 // clipboard contents. Production code uses the real clipboard.Read.
 type clipboardReader func(format clipboard.Format) []byte
 
-// defaultClipboardReader is the real clipboard read function. It's
+// defaultClipboardReader is the platform clipboard reader. It's
 // overridable per-App via SetClipboardReader for tests.
-var defaultClipboardReader clipboardReader = clipboard.Read
+var defaultClipboardReader clipboardReader = platformClipboardReader()
 
 type App struct {
 	// Sub-models
