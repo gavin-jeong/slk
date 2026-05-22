@@ -14,7 +14,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/ui/compose"
@@ -22,6 +21,7 @@ import (
 	"github.com/gammons/slk/internal/ui/sidebar"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
+	"golang.design/x/clipboard"
 )
 
 func TestAppFocusCycle(t *testing.T) {
@@ -299,6 +299,69 @@ func TestHandleInsertMode_PlainEnterSends(t *testing.T) {
 	}
 	if app.compose.Value() != "" {
 		t.Fatalf("expected compose to be reset after send, got %q", app.compose.Value())
+	}
+}
+
+func TestHandleInsertMode_ShiftReturnInsertsNewline(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.Focus()
+	app.compose.SetValue("hello")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyReturn, Mod: tea.ModShift})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(SendMessageMsg); ok {
+				t.Fatalf("Shift+Return should not send the message")
+			}
+		}
+	}
+	if !strings.Contains(app.compose.Value(), "\n") {
+		t.Fatalf("expected newline in compose value, got %q", app.compose.Value())
+	}
+}
+
+func TestHandleInsertMode_AltEnterInsertsNewline(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.Focus()
+	app.compose.SetValue("hello")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(SendMessageMsg); ok {
+				t.Fatalf("Alt+Enter should not send the message")
+			}
+		}
+	}
+	if !strings.Contains(app.compose.Value(), "\n") {
+		t.Fatalf("expected newline in compose value, got %q", app.compose.Value())
+	}
+}
+
+func TestHandleInsertMode_BackslashEnterInsertsNewline(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.Focus()
+	app.compose.SetValue("hello\\")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(SendMessageMsg); ok {
+				t.Fatalf("backslash+Enter should not send the message")
+			}
+		}
+	}
+	if !strings.Contains(app.compose.Value(), "\n") {
+		t.Fatalf("expected newline in compose value, got %q", app.compose.Value())
 	}
 }
 
