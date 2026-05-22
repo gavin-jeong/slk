@@ -19,7 +19,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	"github.com/gammons/slk/internal/config"
 	"github.com/gammons/slk/internal/debuglog"
@@ -44,6 +43,7 @@ import (
 	"github.com/gammons/slk/internal/ui/threadsview"
 	"github.com/gammons/slk/internal/ui/workspace"
 	"github.com/gammons/slk/internal/ui/workspacefinder"
+	"golang.design/x/clipboard"
 )
 
 type Panel int
@@ -349,7 +349,7 @@ type (
 		UserID      string
 		WorkspaceID string
 	}
-	TypingExpiredMsg struct{}
+	TypingExpiredMsg  struct{}
 	PresenceChangeMsg struct {
 		UserID   string
 		Presence string
@@ -725,10 +725,10 @@ type App struct {
 	keys           KeyMap
 
 	// Cached layout widths for mouse hit-testing
-	layoutRailWidth    int
-	layoutSidebarEnd   int // railWidth + sidebarWidth + sidebarBorder
-	layoutMsgEnd       int // layoutSidebarEnd + msgWidth + msgBorder
-	layoutThreadEnd    int // layoutMsgEnd + threadWidth + threadBorder
+	layoutRailWidth  int
+	layoutSidebarEnd int // railWidth + sidebarWidth + sidebarBorder
+	layoutMsgEnd     int // layoutSidebarEnd + msgWidth + msgBorder
+	layoutThreadEnd  int // layoutMsgEnd + threadWidth + threadBorder
 	// Cached pane content heights, used for page-up/down distance calculations.
 	layoutMsgHeight     int
 	layoutSidebarHeight int
@@ -774,11 +774,11 @@ type App struct {
 	// always).
 	channelSyncedAtReader func(channelID string) int64
 	olderMessagesFetcher  OlderMessagesFetchFunc
-	messageSender        MessageSendFunc
-	messageEditor        MessageEditFunc
-	messageDeleter       MessageDeleteFunc
-	messageMarkUnreader  MarkUnreadFunc
-	uploader             UploadFunc
+	messageSender         MessageSendFunc
+	messageEditor         MessageEditFunc
+	messageDeleter        MessageDeleteFunc
+	messageMarkUnreader   MarkUnreadFunc
+	uploader              UploadFunc
 
 	// clipboardAvailable is set at startup based on the result of
 	// clipboard.Init(). When false, Ctrl+V smart-paste is a no-op.
@@ -788,18 +788,18 @@ type App struct {
 	// clipboard contents. Tests inject fakes via SetClipboardReader.
 	clipboardRead clipboardReader
 
-	threadFetcher        ThreadFetchFunc
-	threadCacheReader    ThreadCacheReadFunc
-	threadMarker         ThreadMarkFunc
-	threadReplySender    ThreadReplySendFunc
-	channelJoiner        JoinChannelFunc
-	threadsListFetcher   ThreadsListFetchFunc
+	threadFetcher      ThreadFetchFunc
+	threadCacheReader  ThreadCacheReadFunc
+	threadMarker       ThreadMarkFunc
+	threadReplySender  ThreadReplySendFunc
+	channelJoiner      JoinChannelFunc
+	threadsListFetcher ThreadsListFetchFunc
 	// channelLastReadFetcher returns the parent channel's last_read_ts
 	// so the thread panel can render a "── new ──" boundary. Optional —
 	// when nil, the thread panel renders without an unread boundary.
 	channelLastReadFetcher func(channelID string) string
-	threadsDirtyDebounce time.Duration
-	fetchingOlder        bool
+	threadsDirtyDebounce   time.Duration
+	fetchingOlder          bool
 
 	// Cached user-id -> display-name map (mirror of what SetUserNames
 	// last received). Used by openSelectedThreadCmd to populate the
@@ -1007,36 +1007,36 @@ func previewSpinnerTickCmd() tea.Cmd {
 
 func NewApp() *App {
 	app := &App{
-		workspaceRail:        workspace.New(nil, 0),
-		sidebar:              sidebar.New(nil),
-		messagepane:          messages.New(nil, ""),
-		compose:              compose.New(""),
-		statusbar:            statusbar.New(),
-		channelFinder:        channelfinder.New(),
-		workspaceFinder:      workspacefinder.New(),
-		themeSwitcher:        themeswitcher.New(),
-		presenceMenu:         presencemenu.New(),
-		help:                 help.New(),
-		threadPanel:          thread.New(),
-		threadCompose:        compose.New("thread"),
-		threadsView:          threadsview.New(nil, ""),
-		reactionPicker:       reactionpicker.New(),
-		confirmPrompt:        confirmprompt.New(),
-		mode:                 ModeNormal,
-		focusedPanel:         PanelSidebar,
-		sidebarVisible:       true,
-		view:                 ViewChannels,
-		keys:                 DefaultKeyMap(),
-		typingUsers:          make(map[string]map[string]time.Time),
-		selfSentTSes:         make(map[string]time.Time),
+		workspaceRail:         workspace.New(nil, 0),
+		sidebar:               sidebar.New(nil),
+		messagepane:           messages.New(nil, ""),
+		compose:               compose.New(""),
+		statusbar:             statusbar.New(),
+		channelFinder:         channelfinder.New(),
+		workspaceFinder:       workspacefinder.New(),
+		themeSwitcher:         themeswitcher.New(),
+		presenceMenu:          presencemenu.New(),
+		help:                  help.New(),
+		threadPanel:           thread.New(),
+		threadCompose:         compose.New("thread"),
+		threadsView:           threadsview.New(nil, ""),
+		reactionPicker:        reactionpicker.New(),
+		confirmPrompt:         confirmprompt.New(),
+		mode:                  ModeNormal,
+		focusedPanel:          PanelSidebar,
+		sidebarVisible:        true,
+		view:                  ViewChannels,
+		keys:                  DefaultKeyMap(),
+		typingUsers:           make(map[string]map[string]time.Time),
+		selfSentTSes:          make(map[string]time.Time),
 		lastSelfSendByChannel: make(map[string]time.Time),
-		threadsDirtyDebounce: 150 * time.Millisecond,
-		userNames:            map[string]string{},
-		externalUsers:        map[string]bool{},
-		statusByTeam:         map[string]workspaceStatus{},
-		lastChannelByTeam:    map[string]string{},
-		navHistory:           make(map[string]*navStack),
-		clipboardRead:        defaultClipboardReader,
+		threadsDirtyDebounce:  150 * time.Millisecond,
+		userNames:             map[string]string{},
+		externalUsers:         map[string]bool{},
+		statusByTeam:          map[string]workspaceStatus{},
+		lastChannelByTeam:     map[string]string{},
+		navHistory:            make(map[string]*navStack),
+		clipboardRead:         defaultClipboardReader,
 	}
 	// Seed the picker with built-in emojis so the autocomplete works even
 	// before the first workspace finishes loading customs.
@@ -2878,6 +2878,71 @@ func (a *App) dropStaleStackEntries(stack *navStack, stale []int) {
 	stack.entries = out
 }
 
+func (a *App) matchesKey(msg tea.KeyMsg, bindings ...key.Binding) bool {
+	if key.Matches(msg, bindings...) {
+		return true
+	}
+
+	for _, candidate := range koreanIMEKeyCandidates(msg.Key()) {
+		for _, binding := range bindings {
+			if !binding.Enabled() {
+				continue
+			}
+			for _, bindingKey := range binding.Keys() {
+				if candidate == bindingKey {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func koreanIMEKeyCandidates(k tea.Key) []string {
+	candidates := make([]string, 0, 4)
+	if k.BaseCode != 0 {
+		candidates = append(candidates, qwertyKeyStrings(k.BaseCode, k.Mod)...)
+	}
+	if k.Code != 0 {
+		if qwerty, ok := koreanIMEQWERTY[k.Code]; ok {
+			candidates = append(candidates, modifiedKeyStrings(qwerty, k.Mod)...)
+		}
+	}
+	if len([]rune(k.Text)) == 1 {
+		if qwerty, ok := koreanIMEQWERTY[[]rune(k.Text)[0]]; ok {
+			candidates = append(candidates, modifiedKeyStrings(qwerty, k.Mod)...)
+		}
+	}
+	return candidates
+}
+
+func qwertyKeyStrings(code rune, mod tea.KeyMod) []string {
+	return modifiedKeyStrings(string(code), mod)
+}
+
+func modifiedKeyStrings(keyText string, mod tea.KeyMod) []string {
+	if len(keyText) != 1 {
+		return nil
+	}
+	code := rune(keyText[0])
+	if mod == 0 {
+		return []string{keyText}
+	}
+	candidates := []string{tea.Key{Code: code, Mod: mod}.String()}
+	if mod == tea.ModShift && code >= 'a' && code <= 'z' {
+		candidates = append(candidates, string(code-('a'-'A')))
+	}
+	return candidates
+}
+
+var koreanIMEQWERTY = map[rune]string{
+	'ㅂ': "q", 'ㅈ': "w", 'ㄷ': "e", 'ㄱ': "r", 'ㅅ': "t", 'ㅛ': "y", 'ㅕ': "u", 'ㅑ': "i", 'ㅐ': "o", 'ㅔ': "p",
+	'ㅁ': "a", 'ㄴ': "s", 'ㅇ': "d", 'ㄹ': "f", 'ㅎ': "g", 'ㅗ': "h", 'ㅓ': "j", 'ㅏ': "k", 'ㅣ': "l",
+	'ㅋ': "z", 'ㅌ': "x", 'ㅊ': "c", 'ㅍ': "v", 'ㅠ': "b", 'ㅜ': "n", 'ㅡ': "m",
+	'ㅃ': "Q", 'ㅉ': "W", 'ㄸ': "E", 'ㄲ': "R", 'ㅆ': "T", 'ㅒ': "O", 'ㅖ': "P",
+}
+
 func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 	// Reaction-nav sub-state (intercept before normal keys)
 	if a.focusedPanel == PanelMessages && a.messagepane.ReactionNavActive() {
@@ -2888,7 +2953,7 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch {
-	case key.Matches(msg, a.keys.InsertMode):
+	case a.matchesKey(msg, a.keys.InsertMode):
 		a.SetMode(ModeInsert)
 		// In the Threads view there is no main compose box — the only
 		// way to type is into the right-side thread panel's compose.
@@ -2901,7 +2966,7 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 		a.focusedPanel = PanelMessages
 		return a.compose.Focus()
 
-	case key.Matches(msg, a.keys.Escape):
+	case a.matchesKey(msg, a.keys.Escape):
 		a.cancelEdit()
 		a.SetMode(ModeNormal)
 		a.compose.Blur()
@@ -2909,48 +2974,48 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 			a.CloseThread()
 		}
 
-	case key.Matches(msg, a.keys.Tab):
+	case a.matchesKey(msg, a.keys.Tab):
 		a.FocusNext()
 
-	case key.Matches(msg, a.keys.ShiftTab):
+	case a.matchesKey(msg, a.keys.ShiftTab):
 		a.FocusPrev()
 
-	case key.Matches(msg, a.keys.ToggleSidebar):
+	case a.matchesKey(msg, a.keys.ToggleSidebar):
 		a.ToggleSidebar()
 
-	case key.Matches(msg, a.keys.ToggleThread):
+	case a.matchesKey(msg, a.keys.ToggleThread):
 		a.ToggleThread()
 
-	case key.Matches(msg, a.keys.NavBack):
+	case a.matchesKey(msg, a.keys.NavBack):
 		if cmd := a.navigateBack(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.NavForward):
+	case a.matchesKey(msg, a.keys.NavForward):
 		if cmd := a.navigateForward(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.Down):
+	case a.matchesKey(msg, a.keys.Down):
 		if cmd := a.handleDown(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.Up):
+	case a.matchesKey(msg, a.keys.Up):
 		if cmd := a.handleUp(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.Left):
+	case a.matchesKey(msg, a.keys.Left):
 		a.FocusPrev()
 
-	case key.Matches(msg, a.keys.Right):
+	case a.matchesKey(msg, a.keys.Right):
 		a.FocusNext()
 
-	case key.Matches(msg, a.keys.Enter):
+	case a.matchesKey(msg, a.keys.Enter):
 		return a.handleEnter()
 
-	case key.Matches(msg, a.keys.ToggleSection):
+	case a.matchesKey(msg, a.keys.ToggleSection):
 		// Space on a sidebar section header toggles its collapsed
 		// state; elsewhere it falls through to whatever the focused
 		// panel does with a literal space (typically nothing in
@@ -2961,83 +3026,83 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 
-	case key.Matches(msg, a.keys.Bottom):
+	case a.matchesKey(msg, a.keys.Bottom):
 		if cmd := a.handleGoToBottom(); cmd != nil {
 			return cmd
 		}
 
-	case key.Matches(msg, a.keys.PageUp):
+	case a.matchesKey(msg, a.keys.PageUp):
 		a.scrollFocusedPanel(-a.pageSize())
 
-	case key.Matches(msg, a.keys.PageDown):
+	case a.matchesKey(msg, a.keys.PageDown):
 		a.scrollFocusedPanel(a.pageSize())
 
-	case key.Matches(msg, a.keys.HalfPageUp):
+	case a.matchesKey(msg, a.keys.HalfPageUp):
 		a.scrollFocusedPanel(-a.halfPageSize())
 
-	case key.Matches(msg, a.keys.HalfPageDown):
+	case a.matchesKey(msg, a.keys.HalfPageDown):
 		a.scrollFocusedPanel(a.halfPageSize())
 
-	case key.Matches(msg, a.keys.Help):
+	case a.matchesKey(msg, a.keys.Help):
 		a.help.SetEntries(help.FromKeyMap(a.keys))
 		a.help.Open()
 		a.SetMode(ModeHelp)
 
-	case key.Matches(msg, a.keys.WorkspaceFinder):
+	case a.matchesKey(msg, a.keys.WorkspaceFinder):
 		a.workspaceFinder.Open()
 		a.SetMode(ModeWorkspaceFinder)
 
-	case key.Matches(msg, a.keys.ThemeSwitcher):
+	case a.matchesKey(msg, a.keys.ThemeSwitcher):
 		// Per-workspace scope. Header text shows the current workspace name.
 		header := "Theme for " + a.activeTeamName()
 		a.themeSwitcher.OpenWithScope(themeswitcher.ScopeWorkspace, header)
 		a.SetMode(ModeThemeSwitcher)
 		return nil
-	case key.Matches(msg, a.keys.ThemeSwitcherGlobal):
+	case a.matchesKey(msg, a.keys.ThemeSwitcherGlobal):
 		a.themeSwitcher.OpenWithScope(themeswitcher.ScopeGlobal, "Default theme for new workspaces")
 		a.SetMode(ModeThemeSwitcher)
 		return nil
 
-	case key.Matches(msg, a.keys.PresenceMenu):
+	case a.matchesKey(msg, a.keys.PresenceMenu):
 		header := a.workspaceNameForActive()
 		pres, dndEnabled, dndEnd := a.activeWorkspaceStatus()
 		a.presenceMenu.OpenWith(header, pres, dndEnabled, dndEnd)
 		a.SetMode(ModePresenceMenu)
 
-	case key.Matches(msg, a.keys.FuzzyFinder) || key.Matches(msg, a.keys.FuzzyFinderAlt):
+	case a.matchesKey(msg, a.keys.FuzzyFinder) || a.matchesKey(msg, a.keys.FuzzyFinderAlt):
 		a.channelFinder.Open()
 		a.SetMode(ModeChannelFinder)
 
-	case key.Matches(msg, a.keys.Reaction):
+	case a.matchesKey(msg, a.keys.Reaction):
 		if a.focusedPanel == PanelMessages {
 			return a.openPickerFromMessage()
 		} else if a.focusedPanel == PanelThread {
 			return a.openPickerFromThread()
 		}
 
-	case key.Matches(msg, a.keys.ReactionNav):
+	case a.matchesKey(msg, a.keys.ReactionNav):
 		if a.focusedPanel == PanelMessages {
 			a.messagepane.EnterReactionNav()
 		} else if a.focusedPanel == PanelThread {
 			a.threadPanel.EnterReactionNav()
 		}
 
-	case key.Matches(msg, a.keys.CopyPermalink):
+	case a.matchesKey(msg, a.keys.CopyPermalink):
 		return a.copyPermalinkOfSelected()
 
-	case key.Matches(msg, a.keys.Edit):
+	case a.matchesKey(msg, a.keys.Edit):
 		return a.beginEditOfSelected()
 
-	case key.Matches(msg, a.keys.Delete):
+	case a.matchesKey(msg, a.keys.Delete):
 		return a.beginDeleteOfSelected()
 
-	case key.Matches(msg, a.keys.OpenPreview):
+	case a.matchesKey(msg, a.keys.OpenPreview):
 		return a.openImagePreviewOfSelected()
 
-	case key.Matches(msg, a.keys.MarkUnread):
+	case a.matchesKey(msg, a.keys.MarkUnread):
 		return a.markUnreadOfSelected()
 
-	case key.Matches(msg, a.keys.CloseThreadView):
+	case a.matchesKey(msg, a.keys.CloseThreadView):
 		// Lowercase q is "close thread view" when one is open; if no
 		// thread panel is visible it's a no-op (Q and Ctrl+C are the
 		// quit keys). The vim-style pairing: q closes the transient
@@ -3047,7 +3112,7 @@ func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 
-	case key.Matches(msg, a.keys.QuitConfirm):
+	case a.matchesKey(msg, a.keys.QuitConfirm):
 		a.openQuitConfirm()
 		return nil
 
@@ -3610,19 +3675,19 @@ func (a *App) updateReactionOnMessage(channelID, messageTS, emojiName, userID st
 
 func (a *App) handleReactionNav(msg tea.KeyMsg) tea.Cmd {
 	switch {
-	case key.Matches(msg, a.keys.Left):
+	case a.matchesKey(msg, a.keys.Left):
 		a.messagepane.ReactionNavLeft()
-	case key.Matches(msg, a.keys.Right):
+	case a.matchesKey(msg, a.keys.Right):
 		a.messagepane.ReactionNavRight()
-	case key.Matches(msg, a.keys.Enter):
+	case a.matchesKey(msg, a.keys.Enter):
 		emojiName, isPlus := a.messagepane.SelectedReaction()
 		if isPlus {
 			return a.openPickerFromMessage()
 		}
 		return a.toggleReactionOnSelectedMessage(emojiName)
-	case key.Matches(msg, a.keys.Reaction):
+	case a.matchesKey(msg, a.keys.Reaction):
 		return a.openPickerFromMessage()
-	case key.Matches(msg, a.keys.Escape):
+	case a.matchesKey(msg, a.keys.Escape):
 		a.messagepane.ExitReactionNav()
 	}
 	return nil
@@ -3630,19 +3695,19 @@ func (a *App) handleReactionNav(msg tea.KeyMsg) tea.Cmd {
 
 func (a *App) handleThreadReactionNav(msg tea.KeyMsg) tea.Cmd {
 	switch {
-	case key.Matches(msg, a.keys.Left):
+	case a.matchesKey(msg, a.keys.Left):
 		a.threadPanel.ReactionNavLeft()
-	case key.Matches(msg, a.keys.Right):
+	case a.matchesKey(msg, a.keys.Right):
 		a.threadPanel.ReactionNavRight()
-	case key.Matches(msg, a.keys.Enter):
+	case a.matchesKey(msg, a.keys.Enter):
 		emojiName, isPlus := a.threadPanel.SelectedReaction()
 		if isPlus {
 			return a.openPickerFromThread()
 		}
 		return a.toggleReactionOnSelectedThread(emojiName)
-	case key.Matches(msg, a.keys.Reaction):
+	case a.matchesKey(msg, a.keys.Reaction):
 		return a.openPickerFromThread()
-	case key.Matches(msg, a.keys.Escape):
+	case a.matchesKey(msg, a.keys.Escape):
 		a.threadPanel.ExitReactionNav()
 	}
 	return nil

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/ui/compose"
@@ -22,6 +22,7 @@ import (
 	"github.com/gammons/slk/internal/ui/sidebar"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
+	"golang.design/x/clipboard"
 )
 
 func TestAppFocusCycle(t *testing.T) {
@@ -1097,6 +1098,53 @@ func TestApp_InsertInThreadsViewFocusesThreadCompose(t *testing.T) {
 	}
 	if app.focusedPanel != PanelThread {
 		t.Errorf("after pressing 'i' in threads view focusedPanel = %v, want PanelThread", app.focusedPanel)
+	}
+}
+
+func TestApp_InsertModeMatchesKoreanIMEKey(t *testing.T) {
+	app := NewApp()
+
+	cmd := app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ"})
+	_ = cmd
+
+	if app.mode != ModeInsert {
+		t.Errorf("after pressing Korean IME 'ㅑ' key mode = %v, want ModeInsert", app.mode)
+	}
+}
+
+func TestApp_InsertModeMatchesPhysicalIBaseCode(t *testing.T) {
+	app := NewApp()
+
+	cmd := app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ", BaseCode: 'i'})
+	_ = cmd
+
+	if app.mode != ModeInsert {
+		t.Errorf("after pressing physical i with Korean IME mode = %v, want ModeInsert", app.mode)
+	}
+}
+
+func TestApp_NormalModeKoreanIMEMatchesGeneralKeyBindings(t *testing.T) {
+	app := NewApp()
+	tests := []struct {
+		name string
+		msg  tea.KeyPressMsg
+		want key.Binding
+	}{
+		{name: "j/down", msg: tea.KeyPressMsg{Code: 'ㅓ', Text: "ㅓ"}, want: app.keys.Down},
+		{name: "k/up", msg: tea.KeyPressMsg{Code: 'ㅏ', Text: "ㅏ"}, want: app.keys.Up},
+		{name: "r/reaction", msg: tea.KeyPressMsg{Code: 'ㄱ', Text: "ㄱ"}, want: app.keys.Reaction},
+		{name: "v/open preview", msg: tea.KeyPressMsg{Code: 'ㅍ', Text: "ㅍ"}, want: app.keys.OpenPreview},
+		{name: "shift+g/bottom", msg: tea.KeyPressMsg{Code: 'ㅎ', Text: "ㅎ", Mod: tea.ModShift}, want: app.keys.Bottom},
+		{name: "shift+r/reaction nav", msg: tea.KeyPressMsg{Code: 'ㄲ', Text: "ㄲ"}, want: app.keys.ReactionNav},
+		{name: "base code q/close thread", msg: tea.KeyPressMsg{Code: 'ㅂ', Text: "ㅂ", BaseCode: 'q'}, want: app.keys.CloseThreadView},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !app.matchesKey(tt.msg, tt.want) {
+				t.Fatalf("matchesKey(%q) = false, want true", tt.name)
+			}
+		})
 	}
 }
 
