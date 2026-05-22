@@ -58,6 +58,8 @@ type viewEntry struct {
 	// Model.lastReactionHits per frame so the app-level mouse handler
 	// can route clicks to a toggle-reaction command.
 	reactionHits []reactionEntryHit
+
+	linkHits []linkEntryHit
 }
 
 // reactionEntryHit is one reaction-pill hit-rect, expressed in
@@ -82,6 +84,23 @@ type reactionHitRect struct {
 	colEnd   int // exclusive
 	replyIdx int
 	emoji    string
+}
+
+type linkEntryHit struct {
+	rowStartInEntry int
+	rowEndInEntry   int // exclusive
+	colStart        int
+	colEnd          int // exclusive
+	url             string
+}
+
+type linkHitRect struct {
+	rowStart int
+	rowEnd   int // exclusive
+	colStart int
+	colEnd   int // exclusive
+	replyIdx int
+	url      string
 }
 
 // Model represents the thread panel UI component.
@@ -165,6 +184,7 @@ type Model struct {
 	// rows). Consumed by HitTestReaction so the app-level mouse
 	// handler can toggle a reaction when the user clicks a pill.
 	lastReactionHits []reactionHitRect
+	lastLinkHits     []linkHitRect
 
 	// unreadBoundaryTS is the Slack timestamp the user has already read up
 	// to in this thread. Replies whose TS > unreadBoundaryTS are considered
@@ -1157,7 +1177,7 @@ func (m *Model) View(height, width int) string {
 		// in the chrome-cached path and threading kitty flushes through
 		// the chromeCache lifecycle adds complexity. Reply flushes are
 		// captured below in the per-reply cache loop.
-		parentContent, _, _ := m.renderThreadMessage(m.parent, width, m.userNames, m.channelNames, false)
+		parentContent, _, _, _ := m.renderThreadMessage(m.parent, width, m.userNames, m.channelNames, false)
 		m.chromeCache = header + "\n" + separator + "\n" + parentContent + "\n" + separator
 		m.chromeHeight = lipgloss.Height(m.chromeCache)
 		m.chromeCacheValid = true
@@ -1235,7 +1255,7 @@ func (m *Model) View(height, width int) string {
 			// so the cache rebuilds whenever the highlighted index changes.
 			// This matches the messages-pane convention
 			// (internal/ui/messages/model.go:1050).
-			rendered, attachFlushes, reactHits := m.renderThreadMessage(reply, width, m.userNames, m.channelNames, i == m.selected)
+			rendered, attachFlushes, reactHits, linkHits := m.renderThreadMessage(reply, width, m.userNames, m.channelNames, i == m.selected)
 			// Two filled variants — see internal/ui/messages/model.go for the
 			// rationale. Without per-variant fills, the trailing whitespace of
 			// every wrapped line shows the wrong bg and the tint stops at the
@@ -1269,6 +1289,7 @@ func (m *Model) View(height, width int) string {
 				contentColOffset: 1,
 				flushes:          attachFlushes,
 				reactionHits:     reactHits,
+				linkHits:         linkHits,
 			})
 			m.replyIDToIdx[reply.TS] = i
 		}
@@ -1419,6 +1440,7 @@ func (m *Model) View(height, width int) string {
 	// invisible entry's hits don't survive the next render. Capacity
 	// is preserved across frames (typical case: a handful of pills).
 	m.lastReactionHits = m.lastReactionHits[:0]
+	m.lastLinkHits = m.lastLinkHits[:0]
 	yOff := m.vp.YOffset()
 	for i, e := range m.cache {
 		if len(e.reactionHits) == 0 {
@@ -1455,6 +1477,36 @@ func (m *Model) View(height, width int) string {
 		}
 	}
 
+	for i, e := range m.cache {
+		if len(e.linkHits) == 0 {
+			continue
+		}
+		entryStart := m.entryOffsets[i]
+		for _, h := range e.linkHits {
+			absStart := entryStart + h.rowStartInEntry
+			absEnd := entryStart + h.rowEndInEntry
+			if absEnd <= yOff || absStart >= yOff+replyAreaHeight {
+				continue
+			}
+			clipStart := absStart - yOff
+			if clipStart < 0 {
+				clipStart = 0
+			}
+			clipEnd := absEnd - yOff
+			if clipEnd > replyAreaHeight {
+				clipEnd = replyAreaHeight
+			}
+			m.lastLinkHits = append(m.lastLinkHits, linkHitRect{
+				rowStart: chromeHeight + clipStart,
+				rowEnd:   chromeHeight + clipEnd,
+				colStart: h.colStart,
+				colEnd:   h.colEnd,
+				replyIdx: e.replyIdx,
+				url:      h.url,
+			})
+		}
+	}
+
 	// Overlay the active selection on top of viewContent. Done after
 	// scroll-snapping so YOffset is settled, then re-apply the overlayed
 	// content to the viewport for the final View() render.
@@ -1481,6 +1533,15 @@ func (m *Model) HitTestReaction(row, col int) (replyIdx int, emoji string, ok bo
 	return 0, "", false
 }
 
+func (m *Model) HitTestLink(row, col int) (replyIdx int, url string, ok bool) {
+	for _, h := range m.lastLinkHits {
+		if row >= h.rowStart && row < h.rowEnd && col >= h.colStart && col < h.colEnd {
+			return h.replyIdx, h.url, true
+		}
+	}
+	return 0, "", false
+}
+
 // renderThreadMessage renders a single message for the thread panel.
 // Returns the content string, any per-frame kitty flush callbacks for
 // inline image attachments, and the per-pill hit rects for the
@@ -1490,7 +1551,7 @@ func (m *Model) HitTestReaction(row, col int) (replyIdx int, emoji string, ok bo
 // (mirroring messages.Model). v1: per-block Hit and SixelRows from
 // imgrender are discarded — click-to-preview from a thread reply and
 // inline sixel emission are out of scope.
-func (m *Model) renderThreadMessage(msg messages.MessageItem, width int, userNames map[string]string, channelNames map[string]string, isSelected bool) (string, []func(io.Writer) error, []reactionEntryHit) {
+func (m *Model) renderThreadMessage(msg messages.MessageItem, width int, userNames map[string]string, channelNames map[string]string, isSelected bool) (string, []func(io.Writer) error, []reactionEntryHit, []linkEntryHit) {
 	line := styles.Username.Render(msg.UserName) + lipgloss.NewStyle().Background(styles.Background).Render("  ") + styles.Timestamp.Render(msg.Timestamp)
 
 	contentWidth := width - 4
@@ -1498,7 +1559,10 @@ func (m *Model) renderThreadMessage(msg messages.MessageItem, width int, userNam
 		contentWidth = 20
 	}
 
-	text := styles.MessageText.Render(messages.WordWrap(messages.RenderSlackMarkdown(messages.MessageTextSource(msg), userNames, channelNames), contentWidth))
+	markdown := messages.RenderSlackMarkdown(messages.MessageTextSource(msg), userNames, channelNames)
+	wrappedMarkdown := messages.WordWrap(markdown, contentWidth)
+	text := styles.MessageText.Render(wrappedMarkdown)
+	linkHits := threadLinkHitsFromWrappedMarkdown(wrappedMarkdown)
 
 	var reactionLine string
 	// pillSpecs captures one entry per real (non-"+") reaction pill in
@@ -1644,5 +1708,20 @@ func (m *Model) renderThreadMessage(msg messages.MessageItem, width int, userNam
 		}
 	}
 
-	return line + "\n" + text + attachmentLines + reactionLine, aggFlushes, reactionHits
+	return line + "\n" + text + attachmentLines + reactionLine, aggFlushes, reactionHits, linkHits
+}
+
+func threadLinkHitsFromWrappedMarkdown(wrappedMarkdown string) []linkEntryHit {
+	spans := messages.HTTPLinkSpansFromLines(strings.Split(wrappedMarkdown, "\n"))
+	hits := make([]linkEntryHit, 0, len(spans))
+	for _, s := range spans {
+		hits = append(hits, linkEntryHit{
+			rowStartInEntry: s.RowStart + 1,
+			rowEndInEntry:   s.RowEnd + 1,
+			colStart:        s.ColStart + 1,
+			colEnd:          s.ColEnd + 1,
+			url:             s.URL,
+		})
+	}
+	return hits
 }

@@ -607,3 +607,33 @@ func TestHitTestReaction_NoHitsWithoutReactions(t *testing.T) {
 		t.Error("HitTestReaction with no reactions should always return ok=false")
 	}
 }
+
+func TestHitTestLink_ReplyHTTPLink(t *testing.T) {
+	m := New()
+	m.SetThread(
+		messages.MessageItem{TS: "1700000001.000000", UserName: "alice", Text: "parent"},
+		[]messages.MessageItem{{
+			TS:       "1700000002.000000",
+			UserName: "bob",
+			Text:     "see <https://example.com/thread|thread link>",
+		}},
+		"C123",
+		"1700000001.000000",
+	)
+	_ = m.View(20, 80)
+
+	if len(m.lastLinkHits) == 0 {
+		t.Fatal("expected link hit rect for reply HTTP link")
+	}
+	h := m.lastLinkHits[0]
+	replyIdx, gotURL, ok := m.HitTestLink(h.rowStart, h.colStart)
+	if !ok {
+		t.Fatal("expected click inside thread link hit rect to resolve")
+	}
+	if replyIdx != 0 {
+		t.Fatalf("replyIdx = %d, want 0", replyIdx)
+	}
+	if gotURL != "https://example.com/thread" {
+		t.Fatalf("url = %q, want https://example.com/thread", gotURL)
+	}
+}

@@ -1273,6 +1273,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return a, a.toggleReactionOnMessageItem(a.activeChannelID, msgs[hitMsgIdx], emojiName)
 						}
 					}
+					if _, linkURL, hit := a.messagepane.HitTestLink(contentY, px); hit && linkURL != "" {
+						return a, openExternalURLCmd(linkURL)
+					}
 					if hitMsgIdx, attIdx, fileID, hit := a.messagepane.HitTest(contentY, px); hit && fileID != "" {
 						msgs := a.messagepane.Messages()
 						if hitMsgIdx >= 0 && hitMsgIdx < len(msgs) {
@@ -1306,6 +1309,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if hitReplyIdx >= 0 && hitReplyIdx < len(replies) {
 						return a, a.toggleReactionOnMessageItem(a.threadPanel.ChannelID(), replies[hitReplyIdx], emojiName)
 					}
+				}
+				if _, linkURL, hit := a.threadPanel.HitTestLink(py, px); hit && linkURL != "" {
+					return a, openExternalURLCmd(linkURL)
 				}
 				a.drag = dragState{panel: PanelThread, pressX: px, pressY: py, lastX: px, lastY: py}
 				a.threadPanel.BeginSelectionAt(py, px)
@@ -4842,21 +4848,32 @@ func (a *App) findMessageInActiveChannel(channel, ts string) (messages.MessageIt
 // rundll32 on Windows. Errors are logged and otherwise silent — the
 // overlay is already closed by the time this runs.
 func openInSystemViewerCmd(path string) tea.Cmd {
+	return openDefaultAppCmd(path, "system viewer")
+}
+
+func openExternalURLCmd(rawURL string) tea.Cmd {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return nil
+	}
+	return openDefaultAppCmd(rawURL, "external browser")
+}
+
+func openDefaultAppCmd(target, label string) tea.Cmd {
 	return func() tea.Msg {
-		if path == "" {
+		if target == "" {
 			return nil
 		}
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "darwin":
-			cmd = exec.Command("open", path)
+			cmd = exec.Command("open", target)
 		case "windows":
-			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 		default:
-			cmd = exec.Command("xdg-open", path)
+			cmd = exec.Command("xdg-open", target)
 		}
 		if err := cmd.Start(); err != nil {
-			log.Printf("system viewer launch failed: %v", err)
+			log.Printf("%s launch failed: %v", label, err)
 		}
 		return nil
 	}
