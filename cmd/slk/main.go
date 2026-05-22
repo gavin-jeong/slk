@@ -37,6 +37,7 @@ import (
 	"github.com/gammons/slk/internal/ui/presencemenu"
 	"github.com/gammons/slk/internal/ui/reactionpicker"
 	"github.com/gammons/slk/internal/ui/sidebar"
+	"github.com/gammons/slk/internal/ui/slashpicker"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
 	"github.com/gammons/slk/internal/ui/themeswitcher"
@@ -93,10 +94,10 @@ func (a sectionsProviderAdapter) OrderedSlackSections() []sidebar.SectionMeta {
 
 // WorkspaceContext holds all state for a single connected workspace.
 type WorkspaceContext struct {
-	Client      *slackclient.Client
-	ConnMgr     *slackclient.ConnectionManager
-	RTMHandler  *rtmEventHandler
-	UserNames   map[string]string
+	Client     *slackclient.Client
+	ConnMgr    *slackclient.ConnectionManager
+	RTMHandler *rtmEventHandler
+	UserNames  map[string]string
 	// AvatarURLs maps userID -> avatar image URL. Populated from the
 	// local users cache at connect time (synchronous, before any
 	// goroutines spin up) and refreshed from the background
@@ -120,7 +121,7 @@ type WorkspaceContext struct {
 	// background users.list fetch and any on-demand resolveUser calls.
 	// Used during channel construction to bucket app DMs into a separate
 	// "Apps" sidebar section.
-	BotUserIDs        map[string]bool
+	BotUserIDs map[string]bool
 	// SectionStore holds the user's Slack-native sidebar sections for
 	// this workspace. Nil when use_slack_sections is disabled, the
 	// REST bootstrap failed, or this workspace hasn't connected yet.
@@ -149,7 +150,7 @@ type WorkspaceContext struct {
 	// after a failed one. The UI uses it to decide whether to draw
 	// the "Threads list unavailable" banner.
 	SubscriptionsAvailable bool
-	Channels    []sidebar.ChannelItem
+	Channels               []sidebar.ChannelItem
 	// FinderItems is the merged list shown in the Ctrl+T finder. Initially
 	// contains only joined channels; the BrowseableChannelsLoadedMsg pipeline
 	// extends it with non-joined public channels in the background.
@@ -159,6 +160,7 @@ type WorkspaceContext struct {
 	UserID        string
 	UnresolvedDMs []UnresolvedDM
 	CustomEmoji   map[string]string // emoji name -> URL or "alias:target"
+	SlashCommands []slashpicker.Command
 	// Self presence and DND state for this workspace. Populated on connect
 	// and updated by manual_presence_change / dnd_updated WS events plus
 	// optimistic writes from the presence menu.
@@ -1011,6 +1013,20 @@ func run() error {
 			}
 		})
 
+		app.SetSlashCommandRunner(func(channelID, text string) tea.Msg {
+			wctx := router.Active()
+			if wctx == nil {
+				return ui.ToastMsg{Text: "Command failed: no active workspace"}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := wctx.Client.ExecuteSlashCommand(ctx, channelID, text); err != nil {
+				log.Printf("Warning: failed to execute slash command: %v", err)
+				return ui.ToastMsg{Text: "Command failed: " + err.Error()}
+			}
+			return ui.ToastMsg{Text: "Command sent"}
+		})
+
 		app.SetMessageEditor(func(channelID, ts, text string) tea.Msg {
 			wctx := router.Active()
 			if wctx == nil {
@@ -1313,6 +1329,7 @@ func run() error {
 			ExternalUsers:    external,
 			UserID:           wctx.UserID,
 			CustomEmoji:      wctx.CustomEmoji,
+			SlashCommands:    wctx.SlashCommands,
 			SectionsProvider: sectionsProviderAdapter{store: wctx.SectionStore},
 		}
 	})
@@ -1457,6 +1474,7 @@ func run() error {
 				ExternalUsers:    external,
 				UserID:           wctx.UserID,
 				CustomEmoji:      wctx.CustomEmoji, // empty at this point; filled by the goroutine below
+				SlashCommands:    wctx.SlashCommands,
 				SectionsProvider: sectionsProviderAdapter{store: wctx.SectionStore},
 				InitialActive:    isInitial,
 			})
@@ -1485,19 +1503,19 @@ func run() error {
 			// Resolve unknown DM user names in background
 			if len(wctx.UnresolvedDMs) > 0 {
 				go func() {
-				for _, dm := range wctx.UnresolvedDMs {
-					resolved, isBot := resolveUser(wctx.Client, dm.UserID, wctx.UserNames, db, avatarCache)
-					if isBot {
-						wctx.BotUserIDs[dm.UserID] = true
+					for _, dm := range wctx.UnresolvedDMs {
+						resolved, isBot := resolveUser(wctx.Client, dm.UserID, wctx.UserNames, db, avatarCache)
+						if isBot {
+							wctx.BotUserIDs[dm.UserID] = true
+						}
+						if resolved != dm.UserID {
+							p.Send(ui.DMNameResolvedMsg{
+								ChannelID:   dm.ChannelID,
+								DisplayName: resolved,
+								IsBot:       isBot,
+							})
+						}
 					}
-					if resolved != dm.UserID {
-						p.Send(ui.DMNameResolvedMsg{
-							ChannelID:   dm.ChannelID,
-							DisplayName: resolved,
-							IsBot:       isBot,
-						})
-					}
-				}
 				}()
 			}
 		}(ot.Token)
@@ -1532,6 +1550,38 @@ func run() error {
 	return err
 }
 
+func buildSlashPickerCommands(commands []slackclient.SlashCommand) []slashpicker.Command {
+	out := make([]slashpicker.Command, 0, len(commands))
+	for _, cmd := range commands {
+		if cmd.Command == "" {
+			continue
+		}
+		out = append(out, slashpicker.Command{
+			Name:        cmd.Command,
+			Description: cmd.Description,
+			UsageHint:   cmd.UsageHint,
+		})
+	}
+	return out
+}
+
+func defaultSlashPickerCommands() []slashpicker.Command {
+	return []slashpicker.Command{
+		{Name: "/away", Description: "Set yourself away"},
+		{Name: "/active", Description: "Set yourself active"},
+		{Name: "/dnd", Description: "Manage do not disturb", UsageHint: "[minutes]"},
+		{Name: "/invite", Description: "Invite people to this channel", UsageHint: "@user"},
+		{Name: "/leave", Description: "Leave the current channel"},
+		{Name: "/me", Description: "Post an emote message", UsageHint: "action"},
+		{Name: "/msg", Description: "Open a direct message", UsageHint: "@user message"},
+		{Name: "/remind", Description: "Create a reminder", UsageHint: "who what when"},
+		{Name: "/shrug", Description: "Append a shrug", UsageHint: "message"},
+		{Name: "/status", Description: "Set your status", UsageHint: "text"},
+		{Name: "/topic", Description: "Set the channel topic", UsageHint: "text"},
+		{Name: "/who", Description: "See who is in the channel"},
+	}
+}
+
 func connectWorkspace(ctx context.Context, token slackclient.Token, db *cache.DB, cfg config.Config, avatarCache *avatar.Cache, p *tea.Program) (*WorkspaceContext, error) {
 	client := slackclient.NewClient(token.AccessToken, token.Cookie)
 	if err := client.Connect(ctx); err != nil {
@@ -1548,6 +1598,7 @@ func connectWorkspace(ctx context.Context, token slackclient.Token, db *cache.DB
 		UserNamesByHandle:    make(map[string]string),
 		BotUserIDs:           make(map[string]bool),
 		CustomEmoji:          make(map[string]string),
+		SlashCommands:        defaultSlashPickerCommands(),
 		LastVisitedByChannel: make(map[string]int64),
 	}
 	wctx.SubscriptionsAvailable = true
@@ -1631,6 +1682,11 @@ func connectWorkspace(ctx context.Context, token slackclient.Token, db *cache.DB
 		log.Printf("warning: loading channel visits for %s: %v", token.TeamName, err)
 	} else {
 		wctx.LastVisitedByChannel = visits
+	}
+	if commands, err := client.ListSlashCommands(ctx); err == nil {
+		if pickerCommands := buildSlashPickerCommands(commands); len(pickerCommands) > 0 {
+			wctx.SlashCommands = pickerCommands
+		}
 	}
 
 	// Initialize Slack-native section store if enabled. Bootstrap is

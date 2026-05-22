@@ -19,7 +19,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	"github.com/gammons/slk/internal/config"
 	"github.com/gammons/slk/internal/debuglog"
@@ -37,6 +36,7 @@ import (
 	"github.com/gammons/slk/internal/ui/presencemenu"
 	"github.com/gammons/slk/internal/ui/reactionpicker"
 	"github.com/gammons/slk/internal/ui/sidebar"
+	"github.com/gammons/slk/internal/ui/slashpicker"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
 	"github.com/gammons/slk/internal/ui/themeswitcher"
@@ -44,6 +44,7 @@ import (
 	"github.com/gammons/slk/internal/ui/threadsview"
 	"github.com/gammons/slk/internal/ui/workspace"
 	"github.com/gammons/slk/internal/ui/workspacefinder"
+	"golang.design/x/clipboard"
 )
 
 type Panel int
@@ -131,6 +132,10 @@ type (
 		Message   messages.MessageItem
 	}
 	SendMessageMsg struct {
+		ChannelID string
+		Text      string
+	}
+	SlashCommandMsg struct {
 		ChannelID string
 		Text      string
 	}
@@ -251,6 +256,7 @@ type (
 		ExternalUsers map[string]bool
 		UserID        string
 		CustomEmoji   map[string]string
+		SlashCommands []slashpicker.Command
 		// SectionsProvider supplies Slack-native sidebar sections for this
 		// workspace. Nil means "use config-glob behavior" (the App's
 		// sidebar reverts to its existing name-keyed buckets).
@@ -310,6 +316,7 @@ type (
 		ExternalUsers map[string]bool
 		UserID        string
 		CustomEmoji   map[string]string
+		SlashCommands []slashpicker.Command
 		// SectionsProvider supplies Slack-native sidebar sections for this
 		// workspace. Nil means "use config-glob behavior" (the App's
 		// sidebar reverts to its existing name-keyed buckets).
@@ -349,7 +356,7 @@ type (
 		UserID      string
 		WorkspaceID string
 	}
-	TypingExpiredMsg struct{}
+	TypingExpiredMsg  struct{}
 	PresenceChangeMsg struct {
 		UserID   string
 		Presence string
@@ -479,6 +486,8 @@ type OlderMessagesFetchFunc func(channelID, oldestTS string) tea.Msg
 
 // MessageSendFunc is called when the user sends a message. Returns a tea.Msg with the result.
 type MessageSendFunc func(channelID, text string) tea.Msg
+
+type SlashCommandFunc func(channelID, text string) tea.Msg
 
 // MessageSentMsg is returned after a message is successfully sent.
 // LocalTS, if non-empty, identifies the optimistic placeholder added
@@ -694,9 +703,9 @@ type ChannelJoinFailedMsg struct {
 // clipboard contents. Production code uses the real clipboard.Read.
 type clipboardReader func(format clipboard.Format) []byte
 
-// defaultClipboardReader is the real clipboard read function. It's
+// defaultClipboardReader is the platform clipboard reader. It's
 // overridable per-App via SetClipboardReader for tests.
-var defaultClipboardReader clipboardReader = clipboard.Read
+var defaultClipboardReader clipboardReader = platformClipboardReader()
 
 type App struct {
 	// Sub-models
@@ -725,10 +734,10 @@ type App struct {
 	keys           KeyMap
 
 	// Cached layout widths for mouse hit-testing
-	layoutRailWidth    int
-	layoutSidebarEnd   int // railWidth + sidebarWidth + sidebarBorder
-	layoutMsgEnd       int // layoutSidebarEnd + msgWidth + msgBorder
-	layoutThreadEnd    int // layoutMsgEnd + threadWidth + threadBorder
+	layoutRailWidth  int
+	layoutSidebarEnd int // railWidth + sidebarWidth + sidebarBorder
+	layoutMsgEnd     int // layoutSidebarEnd + msgWidth + msgBorder
+	layoutThreadEnd  int // layoutMsgEnd + threadWidth + threadBorder
 	// Cached pane content heights, used for page-up/down distance calculations.
 	layoutMsgHeight     int
 	layoutSidebarHeight int
@@ -750,6 +759,7 @@ type App struct {
 	// Current context
 	activeChannelID string
 	activeTeamID    string // workspace whose data is currently loaded into the side panels
+	pendingTopKey   bool
 
 	// bootstrapActiveClaimed flips on the first WorkspaceReadyMsg whose
 	// InitialActive=true is observed. Subsequent InitialActive=true
@@ -774,11 +784,12 @@ type App struct {
 	// always).
 	channelSyncedAtReader func(channelID string) int64
 	olderMessagesFetcher  OlderMessagesFetchFunc
-	messageSender        MessageSendFunc
-	messageEditor        MessageEditFunc
-	messageDeleter       MessageDeleteFunc
-	messageMarkUnreader  MarkUnreadFunc
-	uploader             UploadFunc
+	messageSender         MessageSendFunc
+	slashCommandRunner    SlashCommandFunc
+	messageEditor         MessageEditFunc
+	messageDeleter        MessageDeleteFunc
+	messageMarkUnreader   MarkUnreadFunc
+	uploader              UploadFunc
 
 	// clipboardAvailable is set at startup based on the result of
 	// clipboard.Init(). When false, Ctrl+V smart-paste is a no-op.
@@ -788,18 +799,18 @@ type App struct {
 	// clipboard contents. Tests inject fakes via SetClipboardReader.
 	clipboardRead clipboardReader
 
-	threadFetcher        ThreadFetchFunc
-	threadCacheReader    ThreadCacheReadFunc
-	threadMarker         ThreadMarkFunc
-	threadReplySender    ThreadReplySendFunc
-	channelJoiner        JoinChannelFunc
-	threadsListFetcher   ThreadsListFetchFunc
+	threadFetcher      ThreadFetchFunc
+	threadCacheReader  ThreadCacheReadFunc
+	threadMarker       ThreadMarkFunc
+	threadReplySender  ThreadReplySendFunc
+	channelJoiner      JoinChannelFunc
+	threadsListFetcher ThreadsListFetchFunc
 	// channelLastReadFetcher returns the parent channel's last_read_ts
 	// so the thread panel can render a "── new ──" boundary. Optional —
 	// when nil, the thread panel renders without an unread boundary.
 	channelLastReadFetcher func(channelID string) string
-	threadsDirtyDebounce time.Duration
-	fetchingOlder        bool
+	threadsDirtyDebounce   time.Duration
+	fetchingOlder          bool
 
 	// Cached user-id -> display-name map (mirror of what SetUserNames
 	// last received). Used by openSelectedThreadCmd to populate the
@@ -1007,36 +1018,36 @@ func previewSpinnerTickCmd() tea.Cmd {
 
 func NewApp() *App {
 	app := &App{
-		workspaceRail:        workspace.New(nil, 0),
-		sidebar:              sidebar.New(nil),
-		messagepane:          messages.New(nil, ""),
-		compose:              compose.New(""),
-		statusbar:            statusbar.New(),
-		channelFinder:        channelfinder.New(),
-		workspaceFinder:      workspacefinder.New(),
-		themeSwitcher:        themeswitcher.New(),
-		presenceMenu:         presencemenu.New(),
-		help:                 help.New(),
-		threadPanel:          thread.New(),
-		threadCompose:        compose.New("thread"),
-		threadsView:          threadsview.New(nil, ""),
-		reactionPicker:       reactionpicker.New(),
-		confirmPrompt:        confirmprompt.New(),
-		mode:                 ModeNormal,
-		focusedPanel:         PanelSidebar,
-		sidebarVisible:       true,
-		view:                 ViewChannels,
-		keys:                 DefaultKeyMap(),
-		typingUsers:          make(map[string]map[string]time.Time),
-		selfSentTSes:         make(map[string]time.Time),
+		workspaceRail:         workspace.New(nil, 0),
+		sidebar:               sidebar.New(nil),
+		messagepane:           messages.New(nil, ""),
+		compose:               compose.New(""),
+		statusbar:             statusbar.New(),
+		channelFinder:         channelfinder.New(),
+		workspaceFinder:       workspacefinder.New(),
+		themeSwitcher:         themeswitcher.New(),
+		presenceMenu:          presencemenu.New(),
+		help:                  help.New(),
+		threadPanel:           thread.New(),
+		threadCompose:         compose.New("thread"),
+		threadsView:           threadsview.New(nil, ""),
+		reactionPicker:        reactionpicker.New(),
+		confirmPrompt:         confirmprompt.New(),
+		mode:                  ModeNormal,
+		focusedPanel:          PanelSidebar,
+		sidebarVisible:        true,
+		view:                  ViewChannels,
+		keys:                  DefaultKeyMap(),
+		typingUsers:           make(map[string]map[string]time.Time),
+		selfSentTSes:          make(map[string]time.Time),
 		lastSelfSendByChannel: make(map[string]time.Time),
-		threadsDirtyDebounce: 150 * time.Millisecond,
-		userNames:            map[string]string{},
-		externalUsers:        map[string]bool{},
-		statusByTeam:         map[string]workspaceStatus{},
-		lastChannelByTeam:    map[string]string{},
-		navHistory:           make(map[string]*navStack),
-		clipboardRead:        defaultClipboardReader,
+		threadsDirtyDebounce:  150 * time.Millisecond,
+		userNames:             map[string]string{},
+		externalUsers:         map[string]bool{},
+		statusByTeam:          map[string]workspaceStatus{},
+		lastChannelByTeam:     map[string]string{},
+		navHistory:            make(map[string]*navStack),
+		clipboardRead:         defaultClipboardReader,
 	}
 	// Seed the picker with built-in emojis so the autocomplete works even
 	// before the first workspace finishes loading customs.
@@ -1933,6 +1944,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case SlashCommandMsg:
+		if a.slashCommandRunner != nil {
+			runner := a.slashCommandRunner
+			chID, text := msg.ChannelID, msg.Text
+			cmds = append(cmds, func() tea.Msg { return runner(chID, text) })
+		}
+
 	case SendMessageMsg:
 		// Mark in-flight regardless of whether a sender is wired —
 		// the user's send intent is what controls WS-echo suppression
@@ -2407,6 +2425,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.SetExternalUsers(msg.ExternalUsers)
 		a.SetUserNames(msg.UserNames)
 		a.SetCustomEmoji(msg.CustomEmoji)
+		a.SetSlashCommands(msg.SlashCommands)
 		a.currentUserID = msg.UserID
 		a.activeTeamID = msg.TeamID
 		if st, ok := a.statusByTeam[a.activeTeamID]; ok {
@@ -2879,6 +2898,24 @@ func (a *App) dropStaleStackEntries(stack *navStack, stale []int) {
 }
 
 func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
+	if key.Matches(msg, a.keys.Top) {
+		if a.pendingTopKey {
+			a.pendingTopKey = false
+			if cmd := a.handleGoToTop(); cmd != nil {
+				return cmd
+			}
+		} else {
+			a.pendingTopKey = true
+		}
+		return nil
+	}
+	if msg.String() == ":" || (msg.Key().Code == ':' && msg.Key().Text == ":") {
+		a.SetMode(ModeCommand)
+		return nil
+	}
+	if a.pendingTopKey {
+		a.pendingTopKey = false
+	}
 	// Reaction-nav sub-state (intercept before normal keys)
 	if a.focusedPanel == PanelMessages && a.messagepane.ReactionNavActive() {
 		return a.handleReactionNav(msg)
@@ -3090,6 +3127,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 				a.threadCompose.CloseChannel()
 				return nil
 			}
+			if a.threadCompose.IsSlashActive() {
+				a.threadCompose.CloseSlash()
+				return nil
+			}
 		} else {
 			if a.compose.IsEmojiActive() {
 				a.compose.CloseEmoji()
@@ -3101,6 +3142,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 			}
 			if a.compose.IsChannelActive() {
 				a.compose.CloseChannel()
+				return nil
+			}
+			if a.compose.IsSlashActive() {
+				a.compose.CloseSlash()
 				return nil
 			}
 		}
@@ -3122,6 +3167,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 				a.threadCompose.CloseChannel()
 				return nil
 			}
+			if a.threadCompose.IsSlashActive() {
+				a.threadCompose.CloseSlash()
+				return nil
+			}
 		} else {
 			if a.compose.IsEmojiActive() {
 				a.compose.CloseEmoji()
@@ -3135,6 +3184,10 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 				a.compose.CloseChannel()
 				return nil
 			}
+			if a.compose.IsSlashActive() {
+				a.compose.CloseSlash()
+				return nil
+			}
 		}
 		a.SetMode(ModeNormal)
 		a.compose.Blur()
@@ -3144,8 +3197,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 
 	code := msg.Key().Code
 	mod := msg.Key().Mod
-	isPaste := code == 'v' && mod == tea.ModCtrl
-	if isPaste {
+	if isCtrlV(msg) {
 		return a.smartPaste()
 	}
 
@@ -3165,7 +3217,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	// let it own Up/Down so users can navigate the suggestion list. Without
 	// this guard, the jump-to-start/end shortcuts below swallow the arrow
 	// keys before the picker ever sees them.
-	pickerActive := target.IsEmojiActive() || target.IsMentionActive() || target.IsChannelActive()
+	pickerActive := target.IsEmojiActive() || target.IsMentionActive() || target.IsChannelActive() || target.IsSlashActive()
 	if !pickerActive {
 		if code == tea.KeyUp && mod == 0 && target.CursorAtFirstLine() {
 			target.MoveCursorToStart()
@@ -3185,7 +3237,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	// Determine which compose box is active based on focused panel
 	if a.focusedPanel == PanelThread && a.threadVisible {
 		// If a picker is active, forward all keys to compose (including Enter).
-		if a.threadCompose.IsEmojiActive() || a.threadCompose.IsMentionActive() || a.threadCompose.IsChannelActive() {
+		if a.threadCompose.IsEmojiActive() || a.threadCompose.IsMentionActive() || a.threadCompose.IsChannelActive() || a.threadCompose.IsSlashActive() {
 			var cmd tea.Cmd
 			a.threadCompose, cmd = a.threadCompose.Update(msg)
 			return cmd
@@ -3233,7 +3285,7 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 
 	// Channel message compose
 	// If a picker is active, forward all keys to compose (including Enter).
-	if a.compose.IsEmojiActive() || a.compose.IsMentionActive() || a.compose.IsChannelActive() {
+	if a.compose.IsEmojiActive() || a.compose.IsMentionActive() || a.compose.IsChannelActive() || a.compose.IsSlashActive() {
 		var cmd tea.Cmd
 		a.compose, cmd = a.compose.Update(msg)
 		return cmd
@@ -3260,6 +3312,14 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 			text = a.compose.TranslateMentionsForSend(text)
 			a.compose.Reset()
 			a.exitInsertAfterSend()
+			if isSlashCommandText(text) {
+				return func() tea.Msg {
+					return SlashCommandMsg{
+						ChannelID: a.activeChannelID,
+						Text:      text,
+					}
+				}
+			}
 			return func() tea.Msg {
 				return SendMessageMsg{
 					ChannelID: a.activeChannelID,
@@ -3883,6 +3943,37 @@ func (a *App) handleUp() tea.Cmd {
 		}
 	case PanelThread:
 		a.threadPanel.MoveUp()
+	}
+	return nil
+}
+
+func (a *App) handleGoToTop() tea.Cmd {
+	switch a.focusedPanel {
+	case PanelSidebar:
+		a.sidebar.GoToTop()
+	case PanelMessages:
+		if a.view == ViewThreads {
+			a.threadsView.GoToTop()
+			return a.openSelectedThreadCmd(false)
+		}
+		a.messagepane.GoToTop()
+		if a.messagepane.AtTop() && !a.fetchingOlder && a.olderMessagesFetcher != nil {
+			a.fetchingOlder = true
+			a.messagepane.SetLoading(true)
+			chID := a.activeChannelID
+			oldestTS := a.messagepane.OldestTS()
+			fetcher := a.olderMessagesFetcher
+			return tea.Batch(
+				tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+					return SpinnerTickMsg{}
+				}),
+				func() tea.Msg {
+					return fetcher(chID, oldestTS)
+				},
+			)
+		}
+	case PanelThread:
+		a.threadPanel.GoToTop()
 	}
 	return nil
 }
@@ -4515,6 +4606,10 @@ func (a *App) SetMessageSender(fn MessageSendFunc) {
 	a.messageSender = fn
 }
 
+func (a *App) SetSlashCommandRunner(fn SlashCommandFunc) {
+	a.slashCommandRunner = fn
+}
+
 // SetMessageEditor wires the chat.update callback used by edit submit.
 func (a *App) SetMessageEditor(fn MessageEditFunc) {
 	a.messageEditor = fn
@@ -4922,6 +5017,11 @@ func (a *App) SetCustomEmoji(customs map[string]string) {
 	}
 }
 
+func (a *App) SetSlashCommands(commands []slashpicker.Command) {
+	a.compose.SetSlashCommands(commands)
+	a.threadCompose.SetSlashCommands(commands)
+}
+
 // SetInitialChannel sets the active channel and its messages before the TUI starts.
 func (a *App) SetInitialChannel(channelID, channelName string, msgs []messages.MessageItem) {
 	a.activeChannelID = channelID
@@ -5249,6 +5349,13 @@ func (a *App) typingIndicatorText(names []string) string {
 	}
 }
 
+func withKeyboardEnhancements(v tea.View) tea.View {
+	v.KeyboardEnhancements.ReportAlternateKeys = true
+	v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes = true
+	v.KeyboardEnhancements.ReportAssociatedText = true
+	return v
+}
+
 func (a *App) View() tea.View {
 	// Before the terminal reports its size, we can't lay out the
 	// real three-panel UI. Render the loading overlay (or a minimal
@@ -5268,7 +5375,7 @@ func (a *App) View() tea.View {
 		}
 		v := tea.NewView(screen)
 		v.AltScreen = true
-		return v
+		return withKeyboardEnhancements(v)
 	}
 
 	statusHeight := 1
@@ -5472,6 +5579,8 @@ func (a *App) View() tea.View {
 			composeView = mentionView + "\n" + composeView
 		} else if channelView := a.compose.ChannelPickerView(msgWidth - 2); channelView != "" {
 			composeView = channelView + "\n" + composeView
+		} else if slashView := a.compose.SlashPickerView(msgWidth - 2); slashView != "" {
+			composeView = slashView + "\n" + composeView
 		}
 		// Add a background-colored spacer line above the compose box
 		// (replaces MarginTop which produced unstyled/black margin cells)
@@ -5567,6 +5676,8 @@ func (a *App) View() tea.View {
 			threadComposeView = mentionView + "\n" + threadComposeView
 		} else if channelView := a.threadCompose.ChannelPickerView(threadWidth - 2); channelView != "" {
 			threadComposeView = channelView + "\n" + threadComposeView
+		} else if slashView := a.threadCompose.SlashPickerView(threadWidth - 2); slashView != "" {
+			threadComposeView = slashView + "\n" + threadComposeView
 		}
 		threadComposeSpacer := lipgloss.NewStyle().Background(styles.Background).Width(threadWidth - 2).Render("")
 		threadComposeView = threadComposeSpacer + "\n" + threadComposeView
@@ -5711,7 +5822,7 @@ func (a *App) View() tea.View {
 	v := tea.NewView(finalScreen)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	return v
+	return withKeyboardEnhancements(v)
 }
 
 // cancelEdit exits edit mode, restoring the stashed draft to its
@@ -6199,6 +6310,19 @@ func resolveFilePath(text string) (string, bool) {
 		return "", false
 	}
 	return filepath.Clean(s), true
+}
+
+func isSlashCommandText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "/") && len(trimmed) > 1
+}
+
+func isCtrlV(msg tea.KeyMsg) bool {
+	keyEvent := msg.Key()
+	if (keyEvent.Code == 'v' || keyEvent.Code == 'V' || keyEvent.BaseCode == 'v' || keyEvent.BaseCode == 'V') && keyEvent.Mod.Contains(tea.ModCtrl) {
+		return true
+	}
+	return msg.String() == "ctrl+v" || keyEvent.Keystroke() == "ctrl+v"
 }
 
 // uploadToastCmd builds a tea.Cmd that sets the status bar to the

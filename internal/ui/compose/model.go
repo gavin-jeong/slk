@@ -14,6 +14,7 @@ import (
 	"github.com/gammons/slk/internal/ui/channelpicker"
 	"github.com/gammons/slk/internal/ui/emojipicker"
 	"github.com/gammons/slk/internal/ui/mentionpicker"
+	"github.com/gammons/slk/internal/ui/slashpicker"
 	"github.com/gammons/slk/internal/ui/styles"
 )
 
@@ -73,6 +74,14 @@ type Model struct {
 	emojiPicker   emojipicker.Model
 	emojiActive   bool
 	emojiStartCol int
+
+	// Slash-command picker state. slashStartCol is the byte offset of the
+	// first character after '/' within input.Value(); the trigger '/' sits
+	// at slashStartCol-1.
+	slashPicker   slashpicker.Model
+	slashActive   bool
+	slashStartCol int
+	commands      []slashpicker.Command
 
 	// placeholderOverride, when non-empty, replaces the default
 	// "Message #channel..." placeholder. Used by edit mode to display
@@ -316,6 +325,8 @@ func (m *Model) Reset() {
 	m.channelPicker.Close()
 	m.emojiActive = false
 	m.emojiPicker.Close()
+	m.slashActive = false
+	m.slashPicker.Close()
 	m.pending = nil
 	m.uploading = false
 	m.dirty()
@@ -432,6 +443,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m2.dirty()
 		return m2, cmd
 	}
+	if m.slashActive && isKey {
+		m2, cmd := m.handleSlashKey(keyMsg)
+		m2.dirty()
+		return m2, cmd
+	}
 
 	// Normal textarea update
 	var cmd tea.Cmd
@@ -466,6 +482,18 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.channelActive = true
 				m.channelStartCol = cursorAbsPos // cursor is after the #
 				m.channelPicker.Open()
+			}
+		}
+	}
+	if isKey && keyMsg.Key().Text == "/" {
+		val := m.input.Value()
+		cursorAbsPos := m.cursorPosition()
+		slashPos := cursorAbsPos - 1
+		if slashPos >= 0 && slashPos < len(val) && val[slashPos] == '/' {
+			if slashPos == 0 || val[slashPos-1] == ' ' || val[slashPos-1] == '\n' {
+				m.slashActive = true
+				m.slashStartCol = cursorAbsPos
+				m.slashPicker.Open()
 			}
 		}
 	}
@@ -677,6 +705,55 @@ func (m Model) handleChannelKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	default:
 		m.channelActive = false
 		m.channelPicker.Close()
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.autoGrow()
+		return m, cmd
+	}
+}
+
+func (m Model) handleSlashKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	k := msg.Key()
+	switch {
+	case k.Code == tea.KeyUp || (k.Code == 'p' && k.Mod == tea.ModCtrl):
+		m.slashPicker.MoveUp()
+		return m, nil
+	case k.Code == tea.KeyDown || (k.Code == 'n' && k.Mod == tea.ModCtrl):
+		m.slashPicker.MoveDown()
+		return m, nil
+	case k.Code == tea.KeyEnter || k.Code == tea.KeyTab:
+		result := m.slashPicker.Select()
+		if result != nil {
+			m.insertSlash(result)
+		}
+		m.slashActive = false
+		m.slashPicker.Close()
+		return m, nil
+	case k.Code == tea.KeyEscape:
+		m.slashActive = false
+		m.slashPicker.Close()
+		return m, nil
+	case k.Code == tea.KeyBackspace:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		pos := m.cursorPosition()
+		if pos < m.slashStartCol {
+			m.slashActive = false
+			m.slashPicker.Close()
+		} else {
+			m.updateSlashQuery()
+		}
+		m.autoGrow()
+		return m, cmd
+	case len(k.Text) > 0:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.updateSlashQuery()
+		m.autoGrow()
+		return m, cmd
+	default:
+		m.slashActive = false
+		m.slashPicker.Close()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		m.autoGrow()
@@ -946,6 +1023,20 @@ func (m *Model) SetEmojiEntries(entries []emoji.EmojiEntry) {
 	m.dirty()
 }
 
+func (m *Model) SetSlashCommands(commands []slashpicker.Command) {
+	m.commands = commands
+	m.slashPicker.SetCommands(commands)
+	m.dirty()
+}
+
+func (m Model) IsSlashActive() bool { return m.slashActive }
+
+func (m *Model) CloseSlash() {
+	m.slashActive = false
+	m.slashPicker.Close()
+	m.dirty()
+}
+
 // IsEmojiActive returns whether the emoji picker is currently showing.
 func (m Model) IsEmojiActive() bool { return m.emojiActive }
 
@@ -962,6 +1053,13 @@ func (m Model) EmojiPickerView(width int) string {
 		return ""
 	}
 	return m.emojiPicker.View(width)
+}
+
+func (m Model) SlashPickerView(width int) string {
+	if !m.slashActive {
+		return ""
+	}
+	return m.slashPicker.View(width)
 }
 
 // emojiQueryChar reports whether r is a valid character inside an emoji
@@ -1034,6 +1132,51 @@ func (m *Model) maybeOpenEmojiPicker() {
 	} else {
 		m.emojiPicker.SetQuery(query)
 	}
+}
+
+func slashQueryChar(r byte) bool {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return true
+	case r >= 'A' && r <= 'Z':
+		return true
+	case r >= '0' && r <= '9':
+		return true
+	case r == '_' || r == '-':
+		return true
+	}
+	return false
+}
+
+func (m *Model) updateSlashQuery() {
+	val := m.input.Value()
+	pos := m.cursorPosition()
+	if pos > len(val) {
+		pos = len(val)
+	}
+	if m.slashStartCol > pos {
+		m.slashActive = false
+		m.slashPicker.Close()
+		return
+	}
+	query := val[m.slashStartCol:pos]
+	m.slashPicker.SetQuery(query)
+}
+
+func (m *Model) insertSlash(result *slashpicker.Result) {
+	val := m.input.Value()
+	pos := m.cursorPosition()
+	slashPos := m.slashStartCol - 1
+	if slashPos < 0 {
+		slashPos = 0
+	}
+	before := val[:slashPos]
+	after := ""
+	if pos < len(val) {
+		after = val[pos:]
+	}
+	newText := before + slashpicker.FormatCommandInsert(result.Name) + after
+	m.input.SetValue(newText)
 }
 
 // handleEmojiKey processes key events when the emoji picker is active.

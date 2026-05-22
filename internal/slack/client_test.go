@@ -130,6 +130,58 @@ func TestSendMessage_EmptyTextSendsNoBlocks(t *testing.T) {
 	}
 }
 
+func TestExecuteSlashCommand_PostsChatCommandForm(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		gotForm = r.Form
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{token: "xoxc-test", cookie: "d-cookie", apiBaseURL: srv.URL + "/api/"}
+	if err := c.ExecuteSlashCommand(context.Background(), "C1", "/invite @alice"); err != nil {
+		t.Fatalf("ExecuteSlashCommand: %v", err)
+	}
+	if gotPath != "/api/chat.command" {
+		t.Errorf("path = %q, want /api/chat.command", gotPath)
+	}
+	if gotAuth != "Bearer xoxc-test" {
+		t.Errorf("Authorization = %q, want bearer token", gotAuth)
+	}
+	if gotForm.Get("channel") != "C1" {
+		t.Errorf("channel = %q, want C1", gotForm.Get("channel"))
+	}
+	if gotForm.Get("command") != "/invite" {
+		t.Errorf("command = %q, want /invite", gotForm.Get("command"))
+	}
+	if gotForm.Get("text") != "@alice" {
+		t.Errorf("text = %q, want @alice", gotForm.Get("text"))
+	}
+}
+
+func TestExecuteSlashCommand_ReturnsSlackError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"error":"unknown_command"}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{token: "xoxc-test", cookie: "d-cookie", apiBaseURL: srv.URL + "/api/"}
+	if err := c.ExecuteSlashCommand(context.Background(), "C1", "/doesnotexist"); err == nil || !strings.Contains(err.Error(), "unknown_command") {
+		t.Fatalf("expected unknown_command error, got %v", err)
+	}
+}
+
 // mockSlackAPI implements SlackAPI for testing.
 // Function fields allow tests to override default behavior.
 type mockSlackAPI struct {

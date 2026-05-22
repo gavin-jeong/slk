@@ -14,7 +14,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/ui/compose"
@@ -22,6 +21,7 @@ import (
 	"github.com/gammons/slk/internal/ui/sidebar"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
+	"golang.design/x/clipboard"
 )
 
 func TestAppFocusCycle(t *testing.T) {
@@ -70,6 +70,54 @@ func TestAppToggleSidebar(t *testing.T) {
 	app.ToggleSidebar()
 	if !app.sidebarVisible {
 		t.Error("expected sidebar visible after second toggle")
+	}
+}
+
+func TestHandleNormalMode_ColonEntersCommandMode(t *testing.T) {
+	app := NewApp()
+
+	app.handleNormalMode(tea.KeyPressMsg{Code: ':', Text: ":"})
+
+	if app.mode != ModeCommand {
+		t.Fatalf("expected command mode, got %v", app.mode)
+	}
+}
+
+func TestHandleNormalMode_GGJumpsToTop(t *testing.T) {
+	app := NewApp()
+	app.focusedPanel = PanelMessages
+	app.messagepane.SetMessages([]messages.MessageItem{
+		{TS: "1", Text: "one"},
+		{TS: "2", Text: "two"},
+		{TS: "3", Text: "three"},
+	})
+	if app.messagepane.SelectedIndex() != 2 {
+		t.Fatalf("test setup: expected selection at bottom, got %d", app.messagepane.SelectedIndex())
+	}
+
+	app.handleNormalMode(tea.KeyPressMsg{Code: 'g', Text: "g"})
+	if app.messagepane.SelectedIndex() != 2 {
+		t.Fatalf("single g should wait for second g, selected=%d", app.messagepane.SelectedIndex())
+	}
+	app.handleNormalMode(tea.KeyPressMsg{Code: 'g', Text: "g"})
+
+	if app.messagepane.SelectedIndex() != 0 {
+		t.Fatalf("expected gg to jump to first message, got %d", app.messagepane.SelectedIndex())
+	}
+}
+
+func TestAppViewRequestsKeyboardDisambiguation(t *testing.T) {
+	app := NewApp()
+	view := app.View()
+
+	if !view.KeyboardEnhancements.ReportAlternateKeys {
+		t.Fatal("expected alternate key reporting for shifted printable keys")
+	}
+	if !view.KeyboardEnhancements.ReportAllKeysAsEscapeCodes {
+		t.Fatal("expected all keys as escape codes so tmux can pass modified keys")
+	}
+	if !view.KeyboardEnhancements.ReportAssociatedText {
+		t.Fatal("expected associated text for normal text input while all keys are escape codes")
 	}
 }
 
@@ -299,6 +347,32 @@ func TestHandleInsertMode_PlainEnterSends(t *testing.T) {
 	}
 	if app.compose.Value() != "" {
 		t.Fatalf("expected compose to be reset after send, got %q", app.compose.Value())
+	}
+}
+
+func TestHandleInsertMode_PlainEnterRunsSlashCommand(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.SetValue("/invite @alice")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("plain Enter with slash command should return a command cmd")
+	}
+	msg, ok := cmd().(SlashCommandMsg)
+	if !ok {
+		t.Fatalf("expected SlashCommandMsg, got %T", cmd())
+	}
+	if msg.ChannelID != "C1" || msg.Text != "/invite @alice" {
+		t.Fatalf("unexpected slash command msg: %+v", msg)
+	}
+	if app.compose.Value() != "" {
+		t.Fatalf("expected compose to be reset after slash command, got %q", app.compose.Value())
+	}
+	if app.mode != ModeNormal {
+		t.Fatalf("after slash command, mode = %v, want ModeNormal", app.mode)
 	}
 }
 
@@ -1948,6 +2022,33 @@ func TestSmartPaste_ImagePresent_AttachesToCompose(t *testing.T) {
 	}
 	if atts[0].Size != int64(len(pngBytes)) {
 		t.Errorf("expected size %d, got %d", len(pngBytes), atts[0].Size)
+	}
+}
+
+func TestInsertModeCtrlVKey_AttachesClipboardImage(t *testing.T) {
+	app := NewApp()
+	app.SetClipboardAvailable(true)
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	pngBytes := []byte("\x89PNG\r\n\x1a\nfake")
+	app.SetClipboardReader(fakeClipboard(pngBytes, nil))
+
+	_, _ = app.Update(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl})
+
+	atts := app.compose.Attachments()
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(atts))
+	}
+	if string(atts[0].Bytes) != string(pngBytes) {
+		t.Errorf("attachment bytes did not come from clipboard image")
+	}
+}
+
+func TestIsCtrlVMatchesBaseCode(t *testing.T) {
+	msg := tea.KeyPressMsg{Code: 'ㅍ', BaseCode: 'v', Mod: tea.ModCtrl}
+	if !isCtrlV(msg) {
+		t.Fatal("expected Ctrl+V to match by BaseCode")
 	}
 }
 
