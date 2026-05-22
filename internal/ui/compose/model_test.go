@@ -731,9 +731,14 @@ func TestSetUploading(t *testing.T) {
 	if m.Uploading() {
 		t.Error("expected !Uploading() initially")
 	}
+	m.AddAttachment(PendingAttachment{Filename: "a.png", Size: 1})
+	m.SelectNextAttachment()
 	m.SetUploading(true)
 	if !m.Uploading() {
 		t.Error("expected Uploading() after SetUploading(true)")
+	}
+	if m.SelectedAttachmentIndex() != -1 {
+		t.Error("expected selected attachment cleared while uploading")
 	}
 	m.SetUploading(false)
 	if m.Uploading() {
@@ -772,6 +777,95 @@ func TestComposeView_MultipleAttachments_AllChipsRender(t *testing.T) {
 	}
 	if !strings.Contains(view, "b.pdf") {
 		t.Errorf("expected b.pdf in view")
+	}
+}
+
+func TestAttachmentSelectionAndIndexedRemoval(t *testing.T) {
+	m := New("general")
+	m.AddAttachment(PendingAttachment{Filename: "a.png", Size: 1})
+	m.AddAttachment(PendingAttachment{Filename: "b.png", Size: 2})
+	m.AddAttachment(PendingAttachment{Filename: "c.png", Size: 3})
+
+	if m.SelectedAttachmentIndex() != -1 {
+		t.Fatalf("expected no default selection, got %d", m.SelectedAttachmentIndex())
+	}
+	if !m.SelectNextAttachment() || m.SelectedAttachmentIndex() != 0 {
+		t.Fatalf("expected first SelectNextAttachment to select index 0, got %d", m.SelectedAttachmentIndex())
+	}
+	if !m.SelectNextAttachment() || m.SelectedAttachmentIndex() != 1 {
+		t.Fatalf("expected second SelectNextAttachment to select index 1, got %d", m.SelectedAttachmentIndex())
+	}
+	removed, ok := m.RemoveSelectedAttachment()
+	if !ok {
+		t.Fatal("expected RemoveSelectedAttachment ok=true")
+	}
+	if removed.Filename != "b.png" {
+		t.Fatalf("expected removed b.png, got %q", removed.Filename)
+	}
+	got := m.Attachments()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 attachments remaining, got %d", len(got))
+	}
+	if got[0].Filename != "a.png" || got[1].Filename != "c.png" {
+		t.Fatalf("unexpected attachments after removal: %#v", got)
+	}
+	if m.SelectedAttachmentIndex() != 1 {
+		t.Fatalf("expected selection to clamp to index 1, got %d", m.SelectedAttachmentIndex())
+	}
+}
+
+func TestClearAttachmentsClearsSelection(t *testing.T) {
+	m := New("general")
+	m.AddAttachment(PendingAttachment{Filename: "a.png", Size: 1})
+	m.SelectNextAttachment()
+	m.ClearAttachments()
+	if len(m.Attachments()) != 0 {
+		t.Fatalf("expected no attachments after ClearAttachments")
+	}
+	if m.SelectedAttachmentIndex() != -1 {
+		t.Fatalf("expected selection cleared, got %d", m.SelectedAttachmentIndex())
+	}
+}
+
+func TestComposeView_SelectedAttachmentRendersHighlightedChip(t *testing.T) {
+	m := New("general")
+	m.AddAttachment(PendingAttachment{Filename: "a.png", Size: 1})
+	m.SelectNextAttachment()
+	view := m.View(60, false)
+	if !strings.Contains(view, "a.png") {
+		t.Fatalf("expected selected attachment filename in view")
+	}
+}
+
+func TestUpdate_BackspaceSelectedAttachment_RemovesSelected(t *testing.T) {
+	m := New("general")
+	m.AddAttachment(PendingAttachment{Filename: "a.png", Size: 1})
+	m.AddAttachment(PendingAttachment{Filename: "b.png", Size: 2})
+	m.SelectNextAttachment()
+	m.SelectNextAttachment()
+
+	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	got := m2.Attachments()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 attachment after selected backspace, got %d", len(got))
+	}
+	if got[0].Filename != "a.png" {
+		t.Fatalf("expected a.png to remain, got %q", got[0].Filename)
+	}
+}
+
+func TestUpdate_BackspaceNoSelection_RemovesLastAttachment(t *testing.T) {
+	m := New("general")
+	m.AddAttachment(PendingAttachment{Filename: "a.png", Size: 1})
+	m.AddAttachment(PendingAttachment{Filename: "b.png", Size: 2})
+
+	m2, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	got := m2.Attachments()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 attachment after backspace, got %d", len(got))
+	}
+	if got[0].Filename != "a.png" {
+		t.Fatalf("expected a.png to remain, got %q", got[0].Filename)
 	}
 }
 

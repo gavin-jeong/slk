@@ -14,6 +14,7 @@ const (
 	ModeThemeSwitcher
 	ModePresenceMenu
 	ModePresenceCustomSnooze
+	ModeFilePicker
 	ModeConfirm
 	ModeHelp
 )
@@ -40,6 +41,8 @@ func (m Mode) String() string {
 		return "STATUS"
 	case ModePresenceCustomSnooze:
 		return "STATUS-INPUT"
+	case ModeFilePicker:
+		return "ATTACH"
 	case ModeConfirm:
 		return "CONFIRM"
 	case ModeHelp:

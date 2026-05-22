@@ -30,6 +30,7 @@ import (
 	"github.com/gammons/slk/internal/ui/channelpicker"
 	"github.com/gammons/slk/internal/ui/compose"
 	"github.com/gammons/slk/internal/ui/confirmprompt"
+	"github.com/gammons/slk/internal/ui/filepicker"
 	"github.com/gammons/slk/internal/ui/help"
 	"github.com/gammons/slk/internal/ui/imgrender"
 	"github.com/gammons/slk/internal/ui/mentionpicker"
@@ -707,6 +708,7 @@ type App struct {
 	statusbar       statusbar.Model
 	channelFinder   channelfinder.Model
 	workspaceFinder workspacefinder.Model
+	filePicker      filepicker.Model
 	themeSwitcher   themeswitcher.Model
 	presenceMenu    presencemenu.Model
 	help            help.Model
@@ -1014,6 +1016,7 @@ func NewApp() *App {
 		statusbar:            statusbar.New(),
 		channelFinder:        channelfinder.New(),
 		workspaceFinder:      workspacefinder.New(),
+		filePicker:           filepicker.New(),
 		themeSwitcher:        themeswitcher.New(),
 		presenceMenu:         presencemenu.New(),
 		help:                 help.New(),
@@ -2734,6 +2737,8 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return a.handleConfirmMode(msg)
 	case ModeWorkspaceFinder:
 		return a.handleWorkspaceFinderMode(msg)
+	case ModeFilePicker:
+		return a.handleFilePickerMode(msg)
 	case ModeThemeSwitcher:
 		return a.handleThemeSwitcherMode(msg)
 	case ModePresenceMenu:
@@ -3148,6 +3153,9 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	if isPaste {
 		return a.smartPaste()
 	}
+	if key.Matches(msg, a.keys.AttachFile) {
+		return a.openFilePicker()
+	}
 
 	// Insert-mode shortcuts that operate on the active compose:
 	//   Ctrl+U  → clear compose (text + attachments + uploading flag)
@@ -3160,6 +3168,20 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	if code == 'u' && mod == tea.ModCtrl {
 		target.Reset()
 		return nil
+	}
+	if len(target.Attachments()) > 0 {
+		switch {
+		case code == tea.KeyLeft && mod.Contains(tea.ModAlt), code == 'h' && mod == tea.ModCtrl:
+			target.SelectPrevAttachment()
+			return nil
+		case code == tea.KeyRight && mod.Contains(tea.ModAlt), code == 'l' && mod == tea.ModCtrl:
+			target.SelectNextAttachment()
+			return nil
+		case code == tea.KeyDelete || (code == tea.KeyBackspace && target.SelectedAttachmentIndex() >= 0 && target.Value() == ""):
+			if _, ok := target.RemoveSelectedAttachment(); ok {
+				return nil
+			}
+		}
 	}
 	// If a compose-overlay picker (emoji / @mention / #channel) is active,
 	// let it own Up/Down so users can navigate the suggestion list. Without
@@ -3364,6 +3386,37 @@ func (a *App) handleWorkspaceFinderMode(msg tea.KeyMsg) tea.Cmd {
 	}
 	if !a.workspaceFinder.IsVisible() {
 		a.SetMode(ModeNormal)
+	}
+	return nil
+}
+
+func (a *App) handleFilePickerMode(msg tea.KeyMsg) tea.Cmd {
+	keyStr := msg.String()
+	switch msg.Key().Code {
+	case tea.KeyEnter:
+		keyStr = "enter"
+	case tea.KeyEscape:
+		keyStr = "esc"
+	case tea.KeyUp:
+		keyStr = "up"
+	case tea.KeyDown:
+		keyStr = "down"
+	case tea.KeyBackspace:
+		keyStr = "backspace"
+	case tea.KeyLeft:
+		keyStr = "h"
+	}
+	result := a.filePicker.HandleKey(keyStr)
+	if result != nil {
+		a.SetMode(ModeInsert)
+		return a.attachFileToActiveCompose(result.Path)
+	}
+	if !a.filePicker.IsVisible() {
+		a.SetMode(ModeInsert)
+		if a.focusedPanel == PanelThread && a.threadVisible {
+			return a.threadCompose.Focus()
+		}
+		return a.compose.Focus()
 	}
 	return nil
 }
@@ -5663,6 +5716,10 @@ func (a *App) View() tea.View {
 		screen = a.workspaceFinder.ViewOverlay(a.width, a.height, screen)
 	}
 
+	if a.filePicker.IsVisible() {
+		screen = a.filePicker.ViewOverlay(a.width, a.height, screen)
+	}
+
 	if a.themeSwitcher.IsVisible() {
 		screen = a.themeSwitcher.ViewOverlay(a.width, a.height, screen)
 	}
@@ -5696,6 +5753,7 @@ func (a *App) View() tea.View {
 		a.reactionPicker.IsVisible() ||
 		a.confirmPrompt.IsVisible() ||
 		a.workspaceFinder.IsVisible() ||
+		a.filePicker.IsVisible() ||
 		a.themeSwitcher.IsVisible() ||
 		a.presenceMenu.IsVisible() ||
 		a.mode == ModePresenceCustomSnooze ||
@@ -5829,6 +5887,43 @@ func (a *App) smartPaste() tea.Cmd {
 		target.SetValue(target.Value() + string(textBytes))
 	}
 	return nil
+}
+
+func (a *App) openFilePicker() tea.Cmd {
+	if a.compose.Uploading() || a.threadCompose.Uploading() {
+		return a.uploadToastCmd("Upload in progress", 2*time.Second)
+	}
+	a.filePicker.Open()
+	a.SetMode(ModeFilePicker)
+	return nil
+}
+
+func (a *App) attachFileToActiveCompose(path string) tea.Cmd {
+	target := &a.compose
+	if a.focusedPanel == PanelThread && a.threadVisible {
+		target = &a.threadCompose
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return a.uploadToastCmd("Cannot attach: "+truncateReason(err.Error(), 40), 3*time.Second)
+	}
+	if !info.Mode().IsRegular() {
+		return a.uploadToastCmd("Cannot attach: not a regular file", 3*time.Second)
+	}
+	if info.Size() > maxAttachmentSize {
+		return a.uploadToastCmd("File too large (>10 MB limit)", 3*time.Second)
+	}
+	if info.Size() == 0 {
+		return a.uploadToastCmd("Empty file", 2*time.Second)
+	}
+	filename := filepath.Base(path)
+	target.AddAttachment(compose.PendingAttachment{
+		Filename: filename,
+		Path:     path,
+		Mime:     mime.TypeByExtension(filepath.Ext(path)),
+		Size:     info.Size(),
+	})
+	return a.uploadToastCmd(fmt.Sprintf("Attached: %s (%s)", filename, humanSize(info.Size())), 2*time.Second)
 }
 
 // tryAttachFromClipboard inspects the OS clipboard for an image and the
