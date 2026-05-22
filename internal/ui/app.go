@@ -3312,9 +3312,15 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 	// Plain Enter sends; Shift+Enter (and Ctrl+J as a fallback for terminals
-	// that don't disambiguate modifiers) inserts a newline.
-	isSend := code == tea.KeyEnter && !mod.Contains(tea.ModShift)
-	isNewline := (code == tea.KeyEnter && mod.Contains(tea.ModShift)) ||
+	// Plain Enter sends; modified Enter variants insert a newline.
+	keystroke := msg.Key().Keystroke()
+	stringForm := msg.String()
+	isModifiedEnter := stringForm == "shift+enter" || keystroke == "shift+enter" || stringForm == "shift+return" || keystroke == "shift+return" || stringForm == "alt+enter" || keystroke == "alt+enter" || stringForm == "alt+return" || keystroke == "alt+return"
+	textValue := target.Value()
+	isBackslashEnter := (code == tea.KeyEnter || code == tea.KeyReturn) && strings.HasSuffix(textValue, "\\")
+	isPlainEnter := (code == tea.KeyEnter || code == tea.KeyReturn) && !mod.Contains(tea.ModShift) && !mod.Contains(tea.ModAlt)
+	isSend := isPlainEnter && !isModifiedEnter && !isBackslashEnter
+	isNewline := ((code == tea.KeyEnter || code == tea.KeyReturn) && (mod.Contains(tea.ModShift) || mod.Contains(tea.ModAlt))) || isModifiedEnter || isBackslashEnter ||
 		(code == 'j' && mod == tea.ModCtrl)
 
 	// Determine which compose box is active based on focused panel
