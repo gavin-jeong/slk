@@ -197,6 +197,9 @@ type mockSlackAPI struct {
 	endDNDContextFn                 func(ctx context.Context) error
 	getDNDInfoContextFn             func(ctx context.Context, user *string, options ...slack.ParamOption) (*slack.DNDStatus, error)
 	uploadFileContextFn             func(ctx context.Context, params slack.UploadFileParameters) (*slack.FileSummary, error)
+	getUploadURLExternalContextFn   func(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error)
+	uploadToURLFn                   func(ctx context.Context, params slack.UploadToURLParameters) error
+	completeUploadExternalContextFn func(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error)
 	getUsersInConversationContextFn func(ctx context.Context, params *slack.GetUsersInConversationParameters) ([]string, string, error)
 }
 
@@ -327,6 +330,27 @@ func (m *mockSlackAPI) UploadFileContext(ctx context.Context, params slack.Uploa
 	return &slack.FileSummary{}, nil
 }
 
+func (m *mockSlackAPI) GetUploadURLExternalContext(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error) {
+	if m.getUploadURLExternalContextFn != nil {
+		return m.getUploadURLExternalContextFn(ctx, params)
+	}
+	return &slack.GetUploadURLExternalResponse{}, nil
+}
+
+func (m *mockSlackAPI) UploadToURL(ctx context.Context, params slack.UploadToURLParameters) error {
+	if m.uploadToURLFn != nil {
+		return m.uploadToURLFn(ctx, params)
+	}
+	return nil
+}
+
+func (m *mockSlackAPI) CompleteUploadExternalContext(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error) {
+	if m.completeUploadExternalContextFn != nil {
+		return m.completeUploadExternalContextFn(ctx, params)
+	}
+	return &slack.CompleteUploadExternalResponse{}, nil
+}
+
 func (m *mockSlackAPI) GetUsersInConversationContext(ctx context.Context, params *slack.GetUsersInConversationParameters) ([]string, string, error) {
 	if m.getUsersInConversationContextFn != nil {
 		return m.getUsersInConversationContextFn(ctx, params)
@@ -410,6 +434,55 @@ func TestUploadFile_ErrorWraps(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not_authorized") {
 		t.Errorf("expected error to wrap underlying, got %q", err.Error())
+	}
+}
+
+func TestUploadFiles_SharesBatchWithSingleComment(t *testing.T) {
+	var complete slack.CompleteUploadExternalParameters
+	var uploaded []string
+	mock := &mockSlackAPI{
+		getUploadURLExternalContextFn: func(ctx context.Context, params slack.GetUploadURLExternalParameters) (*slack.GetUploadURLExternalResponse, error) {
+			return &slack.GetUploadURLExternalResponse{UploadURL: "https://upload.example/" + params.FileName, FileID: "F-" + params.FileName}, nil
+		},
+		uploadToURLFn: func(ctx context.Context, params slack.UploadToURLParameters) error {
+			uploaded = append(uploaded, params.Filename)
+			return nil
+		},
+		completeUploadExternalContextFn: func(ctx context.Context, params slack.CompleteUploadExternalParameters) (*slack.CompleteUploadExternalResponse, error) {
+			complete = params
+			return &slack.CompleteUploadExternalResponse{Files: params.Files}, nil
+		},
+	}
+	c := &Client{api: mock}
+	files := []slack.UploadFileParameters{
+		{Filename: "a.png", Reader: strings.NewReader("aaa"), FileSize: 3, Title: "A"},
+		{Filename: "b.png", Reader: strings.NewReader("bbbb"), FileSize: 4, Title: "B"},
+	}
+
+	got, err := c.UploadFiles(context.Background(), "C1", "123.456", files, "caption")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 uploaded files, got %d", len(got))
+	}
+	if len(uploaded) != 2 || uploaded[0] != "a.png" || uploaded[1] != "b.png" {
+		t.Fatalf("unexpected uploaded sequence: %#v", uploaded)
+	}
+	if complete.Channel != "C1" {
+		t.Fatalf("expected channel C1, got %q", complete.Channel)
+	}
+	if complete.ThreadTimestamp != "123.456" {
+		t.Fatalf("expected thread ts preserved, got %q", complete.ThreadTimestamp)
+	}
+	if complete.InitialComment != "caption" {
+		t.Fatalf("expected shared comment caption, got %q", complete.InitialComment)
+	}
+	if len(complete.Files) != 2 {
+		t.Fatalf("expected 2 file summaries, got %d", len(complete.Files))
+	}
+	if complete.Files[0].ID != "F-a.png" || complete.Files[1].ID != "F-b.png" {
+		t.Fatalf("unexpected file IDs: %#v", complete.Files)
 	}
 }
 

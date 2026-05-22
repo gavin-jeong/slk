@@ -25,10 +25,12 @@ import (
 	"github.com/gammons/slk/internal/emoji"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/slack/mrkdwn"
+	"github.com/gammons/slk/internal/ui/activityview"
 	"github.com/gammons/slk/internal/ui/channelfinder"
 	"github.com/gammons/slk/internal/ui/channelpicker"
 	"github.com/gammons/slk/internal/ui/compose"
 	"github.com/gammons/slk/internal/ui/confirmprompt"
+	"github.com/gammons/slk/internal/ui/filepicker"
 	"github.com/gammons/slk/internal/ui/help"
 	"github.com/gammons/slk/internal/ui/imgrender"
 	"github.com/gammons/slk/internal/ui/mentionpicker"
@@ -84,12 +86,14 @@ type editState struct {
 
 // View identifies which "page" the message pane is displaying. The default
 // is ViewChannels (a channel's message history); ViewThreads swaps the
-// pane's contents for the involved-threads list.
+// pane's contents for the involved-threads list; ViewActivity swaps it for
+// the activity list.
 type View int
 
 const (
 	ViewChannels View = iota
 	ViewThreads
+	ViewActivity
 )
 
 const (
@@ -171,6 +175,10 @@ type (
 	// synthetic Threads sidebar row. The App switches the message pane to
 	// the threads-list view and (re)fetches the involved-threads list.
 	ThreadsViewActivatedMsg struct{}
+	// ActivityViewActivatedMsg is dispatched when the user picks the
+	// synthetic Activity sidebar row. The App switches the message pane to
+	// the activity-list view and (re)fetches the activity list.
+	ActivityViewActivatedMsg struct{}
 	// ThreadsListLoadedMsg carries a freshly loaded list of involved-thread
 	// summaries for the named workspace. The App ignores it if it doesn't
 	// match the active team.
@@ -183,10 +191,22 @@ type (
 		// when false (Task 10 wires the renderer).
 		SubscriptionsAvailable bool
 	}
+	// ActivityListLoadedMsg carries a freshly loaded list of activity items
+	// for the named workspace. The App ignores it if it doesn't match the
+	// active team.
+	ActivityListLoadedMsg struct {
+		TeamID string
+		Items  []cache.ActivityItem
+	}
 	// ThreadsListDirtyMsg is dispatched when something that could affect
 	// the involved-threads list has changed (new message, mention, etc.)
 	// and the list should be refetched. Ignored if not the active team.
 	ThreadsListDirtyMsg struct {
+		TeamID string
+	}
+	// ActivityListDirtyMsg is dispatched when something that could affect
+	// the activity list has changed and the list should be refetched.
+	ActivityListDirtyMsg struct {
 		TeamID string
 	}
 	ConnectionStateMsg struct {
@@ -655,6 +675,10 @@ type ThreadReplySendFunc func(channelID, threadTS, text string) tea.Msg
 // Returns the resulting tea.Msg (typically ThreadsListLoadedMsg).
 type ThreadsListFetchFunc func(teamID string) tea.Msg
 
+// ActivityListFetchFunc loads the activity list for a workspace.
+// Returns the resulting tea.Msg (typically ActivityListLoadedMsg).
+type ActivityListFetchFunc func(teamID string) tea.Msg
+
 type ReactionAddFunc func(channelID, messageTS, emoji string) error
 type ReactionRemoveFunc func(channelID, messageTS, emoji string) error
 
@@ -716,12 +740,14 @@ type App struct {
 	statusbar       statusbar.Model
 	channelFinder   channelfinder.Model
 	workspaceFinder workspacefinder.Model
+	filePicker      filepicker.Model
 	themeSwitcher   themeswitcher.Model
 	presenceMenu    presencemenu.Model
 	help            help.Model
 	threadPanel     *thread.Model
 	threadCompose   compose.Model
 	threadsView     threadsview.Model
+	activityView    activityview.Model
 
 	// State
 	mode           Mode
@@ -805,12 +831,13 @@ type App struct {
 	// clipboard contents. Tests inject fakes via SetClipboardReader.
 	clipboardRead clipboardReader
 
-	threadFetcher      ThreadFetchFunc
-	threadCacheReader  ThreadCacheReadFunc
-	threadMarker       ThreadMarkFunc
-	threadReplySender  ThreadReplySendFunc
-	channelJoiner      JoinChannelFunc
-	threadsListFetcher ThreadsListFetchFunc
+	threadFetcher       ThreadFetchFunc
+	threadCacheReader   ThreadCacheReadFunc
+	threadMarker        ThreadMarkFunc
+	threadReplySender   ThreadReplySendFunc
+	channelJoiner       JoinChannelFunc
+	threadsListFetcher  ThreadsListFetchFunc
+	activityListFetcher ActivityListFetchFunc
 	// channelLastReadFetcher returns the parent channel's last_read_ts
 	// so the thread panel can render a "── new ──" boundary. Optional —
 	// when nil, the thread panel renders without an unread boundary.
@@ -1036,12 +1063,14 @@ func NewApp() *App {
 		statusbar:             statusbar.New(),
 		channelFinder:         channelfinder.New(),
 		workspaceFinder:       workspacefinder.New(),
+		filePicker:            filepicker.New(),
 		themeSwitcher:         themeswitcher.New(),
 		presenceMenu:          presencemenu.New(),
 		help:                  help.New(),
 		threadPanel:           thread.New(),
 		threadCompose:         compose.New("thread"),
 		threadsView:           threadsview.New(nil, ""),
+		activityView:          activityview.New(nil, ""),
 		reactionPicker:        reactionpicker.New(),
 		confirmPrompt:         confirmprompt.New(),
 		mode:                  ModeNormal,
@@ -1072,6 +1101,11 @@ func NewApp() *App {
 		ID:     channelfinder.ThreadsViewID,
 		Name:   "Threads",
 		Type:   "threads",
+		Joined: true,
+	}, {
+		ID:     channelfinder.ActivityViewID,
+		Name:   "Activity",
+		Type:   "activity",
 		Joined: true,
 	}})
 	// Seed the statusbar hint with the configured help key label so it
@@ -1182,6 +1216,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.threadsView.MoveDown()
 				}
 				cmds = append(cmds, a.openSelectedThreadCmd(true))
+			} else if a.view == ViewActivity {
+				if up {
+					a.activityView.MoveUp()
+				} else {
+					a.activityView.MoveDown()
+				}
 			} else {
 				if up {
 					a.messagepane.MoveUp()
@@ -1272,6 +1312,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				panel, _, py, ok := a.panelAt(msg.X, msg.Y)
 				if ok && panel == PanelMessages && py >= 0 && a.threadsView.ClickAt(py) {
 					return a, a.openSelectedThreadCmd(false)
+				}
+				break
+			}
+			if a.view == ViewActivity {
+				panel, _, py, ok := a.panelAt(msg.X, msg.Y)
+				if ok && panel == PanelMessages && py >= 0 {
+					a.activityView.ClickAt(py)
 				}
 				break
 			}
@@ -1587,9 +1634,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		a.cancelEdit()
-		// Picking a channel always exits the Threads view.
+		// Picking a channel always exits synthetic list views.
 		a.view = ViewChannels
 		a.sidebar.SetThreadsActive(false)
+		a.sidebar.SetActivityActive(false)
 		a.lastOpenedChannelID = ""
 		a.lastOpenedThreadTS = ""
 		// Close thread panel when switching channels
@@ -1960,6 +2008,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, c)
 			}
 		}
+		if a.activeTeamID != "" {
+			team := a.activeTeamID
+			cmds = append(cmds, func() tea.Msg { return ActivityListDirtyMsg{TeamID: team} })
+		}
 
 	case SlashCommandMsg:
 		if a.slashCommandRunner != nil {
@@ -2159,6 +2211,30 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		batch = append(batch, func() tea.Msg { return fetcher(chID, threadTS) })
 		return a, tea.Batch(batch...)
 
+	case ThreadOpenedMsg:
+		a.threadVisible = true
+		a.statusbar.SetInThread(true)
+		a.focusedPanel = PanelThread
+		a.threadPanel.SetThread(msg.ParentMsg, nil, msg.ChannelID, msg.ThreadTS)
+		a.threadCompose.SetChannel("thread")
+		a.applyThreadUnreadBoundary(msg.ChannelID)
+		if a.threadFetcher != nil {
+			fetcher := a.threadFetcher
+			chID := msg.ChannelID
+			ts := msg.ThreadTS
+			var batch []tea.Cmd
+			if a.threadCacheReader != nil {
+				if cached := a.threadCacheReader(chID, ts); len(cached) > 1 {
+					replies := cached[1:]
+					batch = append(batch, func() tea.Msg {
+						return ThreadRepliesLoadedMsg{ThreadTS: ts, Replies: replies}
+					})
+				}
+			}
+			batch = append(batch, func() tea.Msg { return fetcher(chID, ts) })
+			return a, tea.Batch(batch...)
+		}
+
 	case ThreadRepliesLoadedMsg:
 		if a.threadVisible && msg.ThreadTS == a.threadPanel.ThreadTS() {
 			channelID := a.threadPanel.ChannelID()
@@ -2201,6 +2277,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ThreadsViewActivatedMsg:
 		a.view = ViewThreads
 		a.sidebar.SetThreadsActive(true)
+		a.sidebar.SetActivityActive(false)
 		a.focusedPanel = PanelMessages
 		if a.threadsListFetcher != nil && a.activeTeamID != "" {
 			fetcher := a.threadsListFetcher
@@ -2211,6 +2288,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// right thread panel populates without artificial delay.
 		if cmd := a.openSelectedThreadCmd(false); cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+
+	case ActivityViewActivatedMsg:
+		a.view = ViewActivity
+		a.sidebar.SetThreadsActive(false)
+		a.sidebar.SetActivityActive(true)
+		a.focusedPanel = PanelMessages
+		if a.activityListFetcher != nil && a.activeTeamID != "" {
+			fetcher := a.activityListFetcher
+			team := a.activeTeamID
+			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
 		}
 
 	case ThreadsListLoadedMsg:
@@ -2228,9 +2316,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case ActivityListLoadedMsg:
+		if msg.TeamID == a.activeTeamID {
+			a.activityView.SetItems(msg.Items)
+			a.sidebar.SetActivityUnreadCount(a.activityView.UnreadCount())
+		}
+
 	case ThreadsListDirtyMsg:
 		if msg.TeamID == a.activeTeamID && a.threadsListFetcher != nil {
 			fetcher := a.threadsListFetcher
+			team := a.activeTeamID
+			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
+		}
+
+	case ActivityListDirtyMsg:
+		if msg.TeamID == a.activeTeamID && a.activityListFetcher != nil {
+			fetcher := a.activityListFetcher
 			team := a.activeTeamID
 			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
 		}
@@ -2420,8 +2521,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// at all.
 		a.view = ViewChannels
 		a.sidebar.SetThreadsActive(false)
+		a.sidebar.SetActivityActive(false)
 		a.threadsView.SetSummaries(nil)
 		a.sidebar.SetThreadsUnreadCount(0)
+		a.activityView.SetItems(nil)
+		a.sidebar.SetActivityUnreadCount(0)
 		a.lastOpenedChannelID = ""
 		a.lastOpenedThreadTS = ""
 		a.CloseThread()
@@ -2485,10 +2589,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.messagepane.SetLoading(false)
 			a.messagepane.SetMessages(nil)
 		}
-		// Kick off an initial threads-list fetch so the sidebar Threads
-		// row badge populates before the user opens the view.
+		// Kick off initial synthetic-view fetches so sidebar badges populate
+		// before the user opens those views.
 		if a.threadsListFetcher != nil {
 			fetcher := a.threadsListFetcher
+			team := msg.TeamID
+			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
+		}
+		if a.activityListFetcher != nil {
+			fetcher := a.activityListFetcher
 			team := msg.TeamID
 			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
 		}
@@ -2498,7 +2607,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// sidebar and refresh the workspace rail so both re-read
 		// from the DB.
 		a.notifyReadStateChanged()
-		return a, nil
+		if msg.WorkspaceID == a.activeTeamID && a.activityListFetcher != nil {
+			fetcher := a.activityListFetcher
+			team := a.activeTeamID
+			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
+		}
+		return a, tea.Batch(cmds...)
 
 	case ConversationOpenedMsg:
 		if msg.TeamID == a.activeTeamID {
@@ -2551,8 +2665,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.bootstrapActiveClaimed = true
 			a.view = ViewChannels
 			a.sidebar.SetThreadsActive(false)
+			a.sidebar.SetActivityActive(false)
 			a.threadsView.SetSummaries(nil)
 			a.sidebar.SetThreadsUnreadCount(0)
+			a.activityView.SetItems(nil)
+			a.sidebar.SetActivityUnreadCount(0)
 			a.lastOpenedChannelID = ""
 			a.lastOpenedThreadTS = ""
 			// Apply the resolved theme for the initial active workspace.
@@ -2601,6 +2718,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// dropped without affecting the active sidebar.
 		if a.threadsListFetcher != nil {
 			fetcher := a.threadsListFetcher
+			team := msg.TeamID
+			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
+		}
+		if a.activityListFetcher != nil {
+			fetcher := a.activityListFetcher
 			team := msg.TeamID
 			cmds = append(cmds, func() tea.Msg { return fetcher(team) })
 		}
@@ -2819,6 +2941,8 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return a.handleConfirmMode(msg)
 	case ModeWorkspaceFinder:
 		return a.handleWorkspaceFinderMode(msg)
+	case ModeFilePicker:
+		return a.handleFilePickerMode(msg)
 	case ModeThemeSwitcher:
 		return a.handleThemeSwitcherMode(msg)
 	case ModePresenceMenu:
@@ -3341,6 +3465,9 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	if isCtrlV(msg) {
 		return a.smartPaste()
 	}
+	if key.Matches(msg, a.keys.AttachFile) {
+		return a.openFilePicker()
+	}
 
 	// Insert-mode shortcuts that operate on the active compose:
 	//   Ctrl+U  → clear compose (text + attachments + uploading flag)
@@ -3353,6 +3480,20 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 	if code == 'u' && mod == tea.ModCtrl {
 		target.Reset()
 		return nil
+	}
+	if len(target.Attachments()) > 0 {
+		switch {
+		case code == tea.KeyLeft && mod.Contains(tea.ModAlt), code == 'h' && mod == tea.ModCtrl:
+			target.SelectPrevAttachment()
+			return nil
+		case code == tea.KeyRight && mod.Contains(tea.ModAlt), code == 'l' && mod == tea.ModCtrl:
+			target.SelectNextAttachment()
+			return nil
+		case code == tea.KeyDelete || (code == tea.KeyBackspace && target.SelectedAttachmentIndex() >= 0 && target.Value() == ""):
+			if _, ok := target.RemoveSelectedAttachment(); ok {
+				return nil
+			}
+		}
 	}
 	// If a compose-overlay picker (emoji / @mention / #channel) is active,
 	// let it own Up/Down so users can navigate the suggestion list. Without
@@ -3509,11 +3650,14 @@ func (a *App) handleChannelFinderMode(msg tea.KeyMsg) tea.Cmd {
 	if result != nil {
 		a.channelFinder.Close()
 		a.SetMode(ModeNormal)
-		// Synthetic destinations (e.g. Threads view) live alongside
+		// Synthetic destinations (e.g. Threads or Activity view) live alongside
 		// channels in the finder but route to a view activation rather
 		// than a channel switch.
 		if result.Type == "threads" {
 			return func() tea.Msg { return ThreadsViewActivatedMsg{} }
+		}
+		if result.Type == "activity" {
+			return func() tea.Msg { return ActivityViewActivatedMsg{} }
 		}
 		// Already-joined: switch immediately. Not joined: kick off a join
 		// command; ChannelJoinedMsg will fold the channel into the sidebar
@@ -3570,6 +3714,37 @@ func (a *App) handleWorkspaceFinderMode(msg tea.KeyMsg) tea.Cmd {
 	}
 	if !a.workspaceFinder.IsVisible() {
 		a.SetMode(ModeNormal)
+	}
+	return nil
+}
+
+func (a *App) handleFilePickerMode(msg tea.KeyMsg) tea.Cmd {
+	keyStr := msg.String()
+	switch msg.Key().Code {
+	case tea.KeyEnter:
+		keyStr = "enter"
+	case tea.KeyEscape:
+		keyStr = "esc"
+	case tea.KeyUp:
+		keyStr = "up"
+	case tea.KeyDown:
+		keyStr = "down"
+	case tea.KeyBackspace:
+		keyStr = "backspace"
+	case tea.KeyLeft:
+		keyStr = "h"
+	}
+	result := a.filePicker.HandleKey(keyStr)
+	if result != nil {
+		a.SetMode(ModeInsert)
+		return a.attachFileToActiveCompose(result.Path)
+	}
+	if !a.filePicker.IsVisible() {
+		a.SetMode(ModeInsert)
+		if a.focusedPanel == PanelThread && a.threadVisible {
+			return a.threadCompose.Focus()
+		}
+		return a.compose.Focus()
 	}
 	return nil
 }
@@ -4054,6 +4229,10 @@ func (a *App) handleDown() tea.Cmd {
 			// don't fire one conversations.replies call per row.
 			return a.openSelectedThreadCmd(true)
 		}
+		if a.view == ViewActivity {
+			a.activityView.MoveDown()
+			return nil
+		}
 		a.messagepane.MoveDown()
 	case PanelThread:
 		a.threadPanel.MoveDown()
@@ -4070,6 +4249,10 @@ func (a *App) handleUp() tea.Cmd {
 			a.threadsView.MoveUp()
 			// k: same debounce as j — see handleDown.
 			return a.openSelectedThreadCmd(true)
+		}
+		if a.view == ViewActivity {
+			a.activityView.MoveUp()
+			return nil
 		}
 		a.messagepane.MoveUp()
 		// If at top, fetch older messages
@@ -4137,6 +4320,10 @@ func (a *App) handleGoToBottom() tea.Cmd {
 			a.threadsView.GoToBottom()
 			// G is a one-shot jump — fire the fetch immediately.
 			return a.openSelectedThreadCmd(false)
+		}
+		if a.view == ViewActivity {
+			a.activityView.GoToBottom()
+			return nil
 		}
 		a.messagepane.GoToBottom()
 	case PanelThread:
@@ -4235,6 +4422,16 @@ func (a *App) scrollFocusedPanel(delta int) {
 					a.threadsView.MoveDown()
 				}
 			}
+		} else if a.view == ViewActivity {
+			if delta < 0 {
+				for i := 0; i < steps; i++ {
+					a.activityView.MoveUp()
+				}
+			} else {
+				for i := 0; i < steps; i++ {
+					a.activityView.MoveDown()
+				}
+			}
 		} else {
 			if delta < 0 {
 				for i := 0; i < steps; i++ {
@@ -4276,6 +4473,9 @@ func (a *App) handleEnter() tea.Cmd {
 		if a.sidebar.IsThreadsSelected() {
 			return func() tea.Msg { return ThreadsViewActivatedMsg{} }
 		}
+		if a.sidebar.IsActivitySelected() {
+			return func() tea.Msg { return ActivityViewActivatedMsg{} }
+		}
 		// A section header? Toggle its collapse state and stay in
 		// place. Section headers are also navigable via j/k so the
 		// user can expand/collapse the firehose Channels section
@@ -4316,6 +4516,36 @@ func (a *App) handleEnter() tea.Cmd {
 		cmd := a.openSelectedThreadCmd(false)
 		a.focusedPanel = PanelThread
 		return cmd
+	}
+	if a.focusedPanel == PanelMessages && a.view == ViewActivity {
+		item, ok := a.activityView.SelectedItem()
+		if !ok {
+			return nil
+		}
+		if item.ChannelID == "" {
+			return nil
+		}
+		a.sidebar.SelectByID(item.ChannelID)
+		if item.Kind == "thread_reply" && item.ThreadTS != "" {
+			return tea.Sequence(
+				func() tea.Msg {
+					return ChannelSelectedMsg{ID: item.ChannelID, Name: item.ChannelName, Type: item.ChannelType}
+				},
+				func() tea.Msg {
+					parent := messages.MessageItem{
+						TS:       item.ThreadTS,
+						UserID:   item.UserID,
+						UserName: a.userNameFor(item.UserID),
+						Text:     item.Text,
+						ThreadTS: item.ThreadTS,
+					}
+					return ThreadOpenedMsg{ChannelID: item.ChannelID, ThreadTS: item.ThreadTS, ParentMsg: parent}
+				},
+			)
+		}
+		return func() tea.Msg {
+			return ChannelSelectedMsg{ID: item.ChannelID, Name: item.ChannelName, Type: item.ChannelType}
+		}
 	}
 
 	if a.focusedPanel == PanelMessages {
@@ -4722,6 +4952,7 @@ func (a *App) SetChannels(items []sidebar.ChannelItem) {
 	a.messagepane.SetChannelNames(names)
 	a.threadPanel.SetChannelNames(names)
 	a.threadsView.SetChannelNames(names)
+	a.activityView.SetChannelNames(names)
 }
 
 // SetChannelFetcher sets the callback used to load messages when a channel is selected.
@@ -4872,6 +5103,12 @@ func (a *App) SetThreadReplySender(fn ThreadReplySendFunc) {
 // list for a workspace. Called by main.go.
 func (a *App) SetThreadsListFetcher(f ThreadsListFetchFunc) {
 	a.threadsListFetcher = f
+}
+
+// SetActivityListFetcher wires the function that loads the activity list
+// for a workspace. Called by main.go.
+func (a *App) SetActivityListFetcher(f ActivityListFetchFunc) {
+	a.activityListFetcher = f
 }
 
 func (a *App) SetChannelFinderItems(items []channelfinder.Item) {
@@ -5175,6 +5412,7 @@ func openDefaultAppCmd(target, label string) tea.Cmd {
 func (a *App) SetUserNames(names map[string]string) {
 	a.userNames = names
 	a.threadsView.SetUserNames(names)
+	a.activityView.SetUserNames(names)
 	a.messagepane.SetUserNames(names)
 	a.threadPanel.SetUserNames(names)
 
@@ -5259,6 +5497,7 @@ func (a *App) SetPermalinkFetcher(fn PermalinkFetchFunc) {
 func (a *App) SetCurrentUserID(userID string) {
 	a.currentUserID = userID
 	a.threadsView.SetSelfUserID(userID)
+	a.activityView.SetSelfUserID(userID)
 }
 
 // SetNowTimestampFormatter wires the formatter used to render the
@@ -5794,6 +6033,29 @@ func (a *App) View() tea.View {
 			c.store(out, tvVersion, msgWidth, contentHeight, msgLayoutKey)
 		}
 		panels = append(panels, a.panelCacheMsgPanel.output)
+	} else if a.view == ViewActivity {
+		a.activityView.SetUserNames(a.userNames)
+		a.activityView.SetSelfUserID(a.currentUserID)
+		avVersion := a.activityView.Version()
+		if c := &a.panelCacheMsgPanel; !c.hit(avVersion, msgWidth, contentHeight, msgLayoutKey) {
+			msgBorderStyle := styles.UnfocusedBorder.Width(msgWidth)
+			if msgFocused {
+				msgBorderStyle = styles.FocusedBorder.Width(msgWidth)
+			}
+			msgContentHeight := contentHeight - 2
+			a.layoutMsgHeight = msgContentHeight
+			if msgContentHeight < 3 {
+				msgContentHeight = 3
+			}
+			avView := a.activityView.View(msgContentHeight, msgWidth-2)
+			avView = messages.ReapplyBgAfterResets(avView, messages.BgANSI())
+			out := exactSize(
+				msgBorderStyle.Render(avView),
+				msgWidth+msgBorder, contentHeight,
+			)
+			c.store(out, avVersion, msgWidth, contentHeight, msgLayoutKey)
+		}
+		panels = append(panels, a.panelCacheMsgPanel.output)
 	} else {
 		// Channel view: split into cached top region + fresh bottom region.
 		composeView := a.compose.View(msgWidth-2, composeFocused)
@@ -6023,6 +6285,10 @@ func (a *App) View() tea.View {
 		screen = a.workspaceFinder.ViewOverlay(a.width, a.height, screen)
 	}
 
+	if a.filePicker.IsVisible() {
+		screen = a.filePicker.ViewOverlay(a.width, a.height, screen)
+	}
+
 	if a.themeSwitcher.IsVisible() {
 		screen = a.themeSwitcher.ViewOverlay(a.width, a.height, screen)
 	}
@@ -6056,6 +6322,7 @@ func (a *App) View() tea.View {
 		a.reactionPicker.IsVisible() ||
 		a.confirmPrompt.IsVisible() ||
 		a.workspaceFinder.IsVisible() ||
+		a.filePicker.IsVisible() ||
 		a.themeSwitcher.IsVisible() ||
 		a.presenceMenu.IsVisible() ||
 		a.mode == ModePresenceCustomSnooze ||
@@ -6192,6 +6459,43 @@ func (a *App) smartPaste() tea.Cmd {
 		target.SetValue(target.Value() + string(textBytes))
 	}
 	return nil
+}
+
+func (a *App) openFilePicker() tea.Cmd {
+	if a.compose.Uploading() || a.threadCompose.Uploading() {
+		return a.uploadToastCmd("Upload in progress", 2*time.Second)
+	}
+	a.filePicker.Open()
+	a.SetMode(ModeFilePicker)
+	return nil
+}
+
+func (a *App) attachFileToActiveCompose(path string) tea.Cmd {
+	target := &a.compose
+	if a.focusedPanel == PanelThread && a.threadVisible {
+		target = &a.threadCompose
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return a.uploadToastCmd("Cannot attach: "+truncateReason(err.Error(), 40), 3*time.Second)
+	}
+	if !info.Mode().IsRegular() {
+		return a.uploadToastCmd("Cannot attach: not a regular file", 3*time.Second)
+	}
+	if info.Size() > maxAttachmentSize {
+		return a.uploadToastCmd("File too large (>10 MB limit)", 3*time.Second)
+	}
+	if info.Size() == 0 {
+		return a.uploadToastCmd("Empty file", 2*time.Second)
+	}
+	filename := filepath.Base(path)
+	target.AddAttachment(compose.PendingAttachment{
+		Filename: filename,
+		Path:     path,
+		Mime:     mime.TypeByExtension(filepath.Ext(path)),
+		Size:     info.Size(),
+	})
+	return a.uploadToastCmd(fmt.Sprintf("Attached: %s (%s)", filename, humanSize(info.Size())), 2*time.Second)
 }
 
 // tryAttachFromClipboard inspects the OS clipboard for an image and the
