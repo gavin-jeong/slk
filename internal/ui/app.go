@@ -19,7 +19,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	"github.com/gammons/slk/internal/config"
 	"github.com/gammons/slk/internal/debuglog"
@@ -44,6 +43,7 @@ import (
 	"github.com/gammons/slk/internal/ui/threadsview"
 	"github.com/gammons/slk/internal/ui/workspace"
 	"github.com/gammons/slk/internal/ui/workspacefinder"
+	"golang.design/x/clipboard"
 )
 
 type Panel int
@@ -349,7 +349,7 @@ type (
 		UserID      string
 		WorkspaceID string
 	}
-	TypingExpiredMsg struct{}
+	TypingExpiredMsg  struct{}
 	PresenceChangeMsg struct {
 		UserID   string
 		Presence string
@@ -725,10 +725,10 @@ type App struct {
 	keys           KeyMap
 
 	// Cached layout widths for mouse hit-testing
-	layoutRailWidth    int
-	layoutSidebarEnd   int // railWidth + sidebarWidth + sidebarBorder
-	layoutMsgEnd       int // layoutSidebarEnd + msgWidth + msgBorder
-	layoutThreadEnd    int // layoutMsgEnd + threadWidth + threadBorder
+	layoutRailWidth  int
+	layoutSidebarEnd int // railWidth + sidebarWidth + sidebarBorder
+	layoutMsgEnd     int // layoutSidebarEnd + msgWidth + msgBorder
+	layoutThreadEnd  int // layoutMsgEnd + threadWidth + threadBorder
 	// Cached pane content heights, used for page-up/down distance calculations.
 	layoutMsgHeight     int
 	layoutSidebarHeight int
@@ -774,11 +774,11 @@ type App struct {
 	// always).
 	channelSyncedAtReader func(channelID string) int64
 	olderMessagesFetcher  OlderMessagesFetchFunc
-	messageSender        MessageSendFunc
-	messageEditor        MessageEditFunc
-	messageDeleter       MessageDeleteFunc
-	messageMarkUnreader  MarkUnreadFunc
-	uploader             UploadFunc
+	messageSender         MessageSendFunc
+	messageEditor         MessageEditFunc
+	messageDeleter        MessageDeleteFunc
+	messageMarkUnreader   MarkUnreadFunc
+	uploader              UploadFunc
 
 	// clipboardAvailable is set at startup based on the result of
 	// clipboard.Init(). When false, Ctrl+V smart-paste is a no-op.
@@ -788,18 +788,18 @@ type App struct {
 	// clipboard contents. Tests inject fakes via SetClipboardReader.
 	clipboardRead clipboardReader
 
-	threadFetcher        ThreadFetchFunc
-	threadCacheReader    ThreadCacheReadFunc
-	threadMarker         ThreadMarkFunc
-	threadReplySender    ThreadReplySendFunc
-	channelJoiner        JoinChannelFunc
-	threadsListFetcher   ThreadsListFetchFunc
+	threadFetcher      ThreadFetchFunc
+	threadCacheReader  ThreadCacheReadFunc
+	threadMarker       ThreadMarkFunc
+	threadReplySender  ThreadReplySendFunc
+	channelJoiner      JoinChannelFunc
+	threadsListFetcher ThreadsListFetchFunc
 	// channelLastReadFetcher returns the parent channel's last_read_ts
 	// so the thread panel can render a "── new ──" boundary. Optional —
 	// when nil, the thread panel renders without an unread boundary.
 	channelLastReadFetcher func(channelID string) string
-	threadsDirtyDebounce time.Duration
-	fetchingOlder        bool
+	threadsDirtyDebounce   time.Duration
+	fetchingOlder          bool
 
 	// Cached user-id -> display-name map (mirror of what SetUserNames
 	// last received). Used by openSelectedThreadCmd to populate the
@@ -1007,36 +1007,36 @@ func previewSpinnerTickCmd() tea.Cmd {
 
 func NewApp() *App {
 	app := &App{
-		workspaceRail:        workspace.New(nil, 0),
-		sidebar:              sidebar.New(nil),
-		messagepane:          messages.New(nil, ""),
-		compose:              compose.New(""),
-		statusbar:            statusbar.New(),
-		channelFinder:        channelfinder.New(),
-		workspaceFinder:      workspacefinder.New(),
-		themeSwitcher:        themeswitcher.New(),
-		presenceMenu:         presencemenu.New(),
-		help:                 help.New(),
-		threadPanel:          thread.New(),
-		threadCompose:        compose.New("thread"),
-		threadsView:          threadsview.New(nil, ""),
-		reactionPicker:       reactionpicker.New(),
-		confirmPrompt:        confirmprompt.New(),
-		mode:                 ModeNormal,
-		focusedPanel:         PanelSidebar,
-		sidebarVisible:       true,
-		view:                 ViewChannels,
-		keys:                 DefaultKeyMap(),
-		typingUsers:          make(map[string]map[string]time.Time),
-		selfSentTSes:         make(map[string]time.Time),
+		workspaceRail:         workspace.New(nil, 0),
+		sidebar:               sidebar.New(nil),
+		messagepane:           messages.New(nil, ""),
+		compose:               compose.New(""),
+		statusbar:             statusbar.New(),
+		channelFinder:         channelfinder.New(),
+		workspaceFinder:       workspacefinder.New(),
+		themeSwitcher:         themeswitcher.New(),
+		presenceMenu:          presencemenu.New(),
+		help:                  help.New(),
+		threadPanel:           thread.New(),
+		threadCompose:         compose.New("thread"),
+		threadsView:           threadsview.New(nil, ""),
+		reactionPicker:        reactionpicker.New(),
+		confirmPrompt:         confirmprompt.New(),
+		mode:                  ModeNormal,
+		focusedPanel:          PanelSidebar,
+		sidebarVisible:        true,
+		view:                  ViewChannels,
+		keys:                  DefaultKeyMap(),
+		typingUsers:           make(map[string]map[string]time.Time),
+		selfSentTSes:          make(map[string]time.Time),
 		lastSelfSendByChannel: make(map[string]time.Time),
-		threadsDirtyDebounce: 150 * time.Millisecond,
-		userNames:            map[string]string{},
-		externalUsers:        map[string]bool{},
-		statusByTeam:         map[string]workspaceStatus{},
-		lastChannelByTeam:    map[string]string{},
-		navHistory:           make(map[string]*navStack),
-		clipboardRead:        defaultClipboardReader,
+		threadsDirtyDebounce:  150 * time.Millisecond,
+		userNames:             map[string]string{},
+		externalUsers:         map[string]bool{},
+		statusByTeam:          map[string]workspaceStatus{},
+		lastChannelByTeam:     map[string]string{},
+		navHistory:            make(map[string]*navStack),
+		clipboardRead:         defaultClipboardReader,
 	}
 	// Seed the picker with built-in emojis so the autocomplete works even
 	// before the first workspace finishes loading customs.
@@ -1273,6 +1273,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							return a, a.toggleReactionOnMessageItem(a.activeChannelID, msgs[hitMsgIdx], emojiName)
 						}
 					}
+					if _, linkURL, hit := a.messagepane.HitTestLink(contentY, px); hit && linkURL != "" {
+						return a, openExternalURLCmd(linkURL)
+					}
 					if hitMsgIdx, attIdx, fileID, hit := a.messagepane.HitTest(contentY, px); hit && fileID != "" {
 						msgs := a.messagepane.Messages()
 						if hitMsgIdx >= 0 && hitMsgIdx < len(msgs) {
@@ -1306,6 +1309,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if hitReplyIdx >= 0 && hitReplyIdx < len(replies) {
 						return a, a.toggleReactionOnMessageItem(a.threadPanel.ChannelID(), replies[hitReplyIdx], emojiName)
 					}
+				}
+				if _, linkURL, hit := a.threadPanel.HitTestLink(py, px); hit && linkURL != "" {
+					return a, openExternalURLCmd(linkURL)
 				}
 				a.drag = dragState{panel: PanelThread, pressX: px, pressY: py, lastX: px, lastY: py}
 				a.threadPanel.BeginSelectionAt(py, px)
@@ -4841,22 +4847,81 @@ func (a *App) findMessageInActiveChannel(channel, ts string) (messages.MessageIt
 // viewer for path. Uses xdg-open on Linux, open on macOS, and
 // rundll32 on Windows. Errors are logged and otherwise silent — the
 // overlay is already closed by the time this runs.
+func openSingleMessageLinkCmd(msg messages.MessageItem) tea.Cmd {
+	linkURL := singleHTTPURLFromMessage(msg)
+	if linkURL == "" {
+		return nil
+	}
+	return openExternalURLCmd(linkURL)
+}
+
+func singleHTTPURLFromMessage(msg messages.MessageItem) string {
+	urls := httpURLsFromText(messages.MessageTextSource(msg))
+	for _, att := range msg.Attachments {
+		if strings.HasPrefix(att.URL, "http://") || strings.HasPrefix(att.URL, "https://") {
+			urls = append(urls, att.URL)
+		}
+	}
+	if len(urls) != 1 {
+		return ""
+	}
+	return urls[0]
+}
+
+func httpURLsFromText(text string) []string {
+	var urls []string
+	for start := 0; start < len(text); {
+		idx := -1
+		for _, prefix := range []string{"https://", "http://"} {
+			if i := strings.Index(text[start:], prefix); i >= 0 && (idx == -1 || start+i < idx) {
+				idx = start + i
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		end := idx
+		for end < len(text) {
+			switch text[end] {
+			case ' ', '\t', '\n', '\r', '|', '>':
+				goto found
+			}
+			end++
+		}
+	found:
+		urls = append(urls, strings.TrimRight(text[idx:end], ".,;:!?)\""))
+		start = end
+	}
+	return urls
+}
+
 func openInSystemViewerCmd(path string) tea.Cmd {
+	return openDefaultAppCmd(path, "system viewer")
+}
+
+func openExternalURLCmd(rawURL string) tea.Cmd {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return nil
+	}
+	return openDefaultAppCmd(rawURL, "external browser")
+}
+
+func openDefaultAppCmd(target, label string) tea.Cmd {
 	return func() tea.Msg {
-		if path == "" {
+		if target == "" {
 			return nil
 		}
 		var cmd *exec.Cmd
 		switch runtime.GOOS {
 		case "darwin":
-			cmd = exec.Command("open", path)
+			cmd = exec.Command("open", target)
 		case "windows":
-			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+			cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 		default:
-			cmd = exec.Command("xdg-open", path)
+			cmd = exec.Command("xdg-open", target)
 		}
 		if err := cmd.Start(); err != nil {
-			log.Printf("system viewer launch failed: %v", err)
+			log.Printf("%s launch failed: %v", label, err)
 		}
 		return nil
 	}
