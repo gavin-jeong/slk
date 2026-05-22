@@ -632,6 +632,7 @@ func run() error {
 
 	// Cell pixel metrics for sizing decisions.
 	pxW, pxH := imgpkg.CellPixels(int(os.Stdout.Fd()))
+		imgpkg.SetRenderCellPixels(image.Pt(pxW, pxH))
 	debuglog.ImgRender("cell pixels: %dx%d", pxW, pxH)
 
 	// Wire the inline-image pipeline into the messages pane. SendMsg
