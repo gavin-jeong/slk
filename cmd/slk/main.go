@@ -1198,6 +1198,19 @@ func run() error {
 			}
 		})
 
+		app.SetActivityListFetcher(func(teamID string) tea.Msg {
+			wctx := router.Active()
+			if wctx == nil {
+				return nil
+			}
+			items, err := db.ListActivityItems(teamID, wctx.Client.UserID(), 100)
+			if err != nil {
+				log.Printf("Warning: ListActivityItems(%s): %v", teamID, err)
+				return ui.ActivityListLoadedMsg{TeamID: teamID, Items: nil}
+			}
+			return ui.ActivityListLoadedMsg{TeamID: teamID, Items: items}
+		})
+
 		app.SetThreadReplySender(func(channelID, threadTS, text string) tea.Msg {
 			wctx := router.Active()
 			if wctx == nil {

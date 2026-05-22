@@ -1,0 +1,458 @@
+package activityview
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	"charm.land/lipgloss/v2"
+	"github.com/gammons/slk/internal/cache"
+	"github.com/gammons/slk/internal/ui/messages"
+	"github.com/gammons/slk/internal/ui/styles"
+	"github.com/muesli/reflow/truncate"
+)
+
+const (
+	cardContentLines = 3
+	cardStride       = cardContentLines + 1
+)
+
+func mutedStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(styles.TextMuted)
+}
+
+func unreadDotStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(styles.Primary).Bold(true)
+}
+
+func channelNameStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(styles.Primary).Bold(true)
+}
+
+var thickLeftBorder = lipgloss.Border{Left: "▌"}
+
+func borderInvisStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		BorderStyle(thickLeftBorder).BorderLeft(true).
+		BorderForeground(styles.Background).
+		BorderBackground(styles.Background)
+}
+
+func borderSelectStyle(focused bool) lipgloss.Style {
+	return lipgloss.NewStyle().
+		BorderStyle(thickLeftBorder).BorderLeft(true).
+		BorderForeground(styles.SelectionBorderColor(focused)).
+		BorderBackground(styles.SelectionTintColor(focused)).
+		Background(styles.SelectionTintColor(focused))
+}
+
+func borderFillStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Background(styles.Background)
+}
+
+type Model struct {
+	items         []cache.ActivityItem
+	userNames     map[string]string
+	channelNames  map[string]string
+	selfUserID    string
+	selected      int
+	focused       bool
+	yOffset       int
+	snappedSelection int
+	hasSnapped    bool
+	version       int64
+}
+
+func New(userNames map[string]string, selfUserID string) Model {
+	if userNames == nil {
+		userNames = map[string]string{}
+	}
+	return Model{
+		userNames:    userNames,
+		channelNames: map[string]string{},
+		selfUserID:   selfUserID,
+	}
+}
+
+func (m *Model) Version() int64 { return m.version }
+
+func (m *Model) dirty() { m.version++ }
+
+func (m *Model) SetItems(items []cache.ActivityItem) {
+	prevCh, prevTS, hadSel := m.selectedKey()
+	m.items = items
+	newSel := 0
+	if hadSel {
+		for i, item := range items {
+			if item.ChannelID == prevCh && item.TS == prevTS {
+				newSel = i
+				break
+			}
+		}
+	}
+	m.selected = newSel
+	m.clampSelection()
+	m.hasSnapped = false
+	m.dirty()
+}
+
+func (m *Model) SetUserNames(names map[string]string) {
+	if names == nil {
+		names = map[string]string{}
+	}
+	if stringMapsEqual(m.userNames, names) {
+		return
+	}
+	m.userNames = names
+	m.dirty()
+}
+
+func (m *Model) SetChannelNames(names map[string]string) {
+	if names == nil {
+		names = map[string]string{}
+	}
+	if stringMapsEqual(m.channelNames, names) {
+		return
+	}
+	m.channelNames = names
+	m.dirty()
+}
+
+func (m *Model) SetSelfUserID(id string) {
+	if m.selfUserID == id {
+		return
+	}
+	m.selfUserID = id
+	m.dirty()
+}
+
+func (m *Model) SetFocused(f bool) {
+	if m.focused == f {
+		return
+	}
+	m.focused = f
+	m.dirty()
+}
+
+func (m *Model) SelectedItem() (cache.ActivityItem, bool) {
+	if len(m.items) == 0 || m.selected < 0 || m.selected >= len(m.items) {
+		return cache.ActivityItem{}, false
+	}
+	return m.items[m.selected], true
+}
+
+func (m *Model) selectedKey() (string, string, bool) {
+	item, ok := m.SelectedItem()
+	if !ok {
+		return "", "", false
+	}
+	return item.ChannelID, item.TS, true
+}
+
+func (m *Model) SelectedIndex() int { return m.selected }
+
+func (m *Model) MoveDown() {
+	if m.selected < len(m.items)-1 {
+		m.selected++
+		m.dirty()
+	}
+}
+
+func (m *Model) MoveUp() {
+	if m.selected > 0 {
+		m.selected--
+		m.dirty()
+	}
+}
+
+func (m *Model) GoToTop() {
+	if m.selected != 0 {
+		m.selected = 0
+		m.dirty()
+	}
+}
+
+func (m *Model) GoToBottom() {
+	if n := len(m.items); n > 0 && m.selected != n-1 {
+		m.selected = n - 1
+		m.dirty()
+	}
+}
+
+func (m *Model) ScrollUp(n int) {
+	if n <= 0 {
+		return
+	}
+	m.yOffset -= n
+	if m.yOffset < 0 {
+		m.yOffset = 0
+	}
+	m.hasSnapped = false
+	m.dirty()
+}
+
+func (m *Model) ScrollDown(n int) {
+	if n <= 0 {
+		return
+	}
+	m.yOffset += n
+	m.hasSnapped = false
+	m.dirty()
+}
+
+func (m *Model) ClickAt(rowY int) bool {
+	if rowY < 0 {
+		return false
+	}
+	absLine := m.yOffset + rowY
+	if absLine < 0 {
+		return false
+	}
+	if absLine%cardStride >= cardContentLines {
+		return false
+	}
+	idx := absLine / cardStride
+	if idx < 0 || idx >= len(m.items) {
+		return false
+	}
+	if m.selected != idx {
+		m.selected = idx
+		m.dirty()
+	}
+	return true
+}
+
+func (m *Model) UnreadCount() int {
+	n := 0
+	for _, item := range m.items {
+		if item.Unread {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *Model) clampSelection() {
+	if m.selected < 0 {
+		m.selected = 0
+	}
+	if n := len(m.items); n == 0 {
+		m.selected = 0
+	} else if m.selected >= n {
+		m.selected = n - 1
+	}
+}
+
+func (m *Model) View(height, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+	if len(m.items) == 0 {
+		empty := mutedStyle().Render("no activity")
+		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, empty)
+	}
+	lines := m.renderRows(width)
+	if !m.hasSnapped || m.snappedSelection != m.selected {
+		m.snapToSelected(height, len(lines))
+		m.snappedSelection = m.selected
+		m.hasSnapped = true
+	}
+	maxOffset := len(lines) - height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.yOffset > maxOffset {
+		m.yOffset = maxOffset
+	}
+	if m.yOffset < 0 {
+		m.yOffset = 0
+	}
+	end := m.yOffset + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+	visible := lines[m.yOffset:end]
+	if pad := height - len(visible); pad > 0 {
+		filler := blankLine(width)
+		out := make([]string, 0, height)
+		out = append(out, visible...)
+		for i := 0; i < pad; i++ {
+			out = append(out, filler)
+		}
+		visible = out
+	}
+	return strings.Join(visible, "\n")
+}
+
+func (m *Model) snapToSelected(height, totalLines int) {
+	start := m.selected * cardStride
+	end := start + cardContentLines
+	if end > m.yOffset+height {
+		m.yOffset = end - height
+	}
+	if start < m.yOffset {
+		m.yOffset = start
+	}
+	if m.yOffset < 0 {
+		m.yOffset = 0
+	}
+	maxOffset := totalLines - height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.yOffset > maxOffset {
+		m.yOffset = maxOffset
+	}
+}
+
+func (m *Model) renderRows(width int) []string {
+	separator := blankLine(width)
+	var lines []string
+	for i, item := range m.items {
+		if i > 0 {
+			lines = append(lines, separator)
+		}
+		lines = append(lines, m.renderCard(item, width, i == m.selected)...)
+	}
+	return lines
+}
+
+func blankLine(width int) string {
+	return lipgloss.NewStyle().Width(width).Render("")
+}
+
+func (m *Model) renderCard(item cache.ActivityItem, width int, selected bool) []string {
+	contentWidth := width - 1
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	header := m.renderHeader(item, contentWidth)
+	preview := m.renderPreview(item, contentWidth)
+	footer := m.renderFooter(item, contentWidth)
+
+	borderStyle := borderInvisStyle()
+	fill := borderFillStyle().Width(contentWidth)
+	if selected {
+		borderStyle = borderSelectStyle(m.focused)
+		fill = lipgloss.NewStyle().Background(styles.SelectionTintColor(m.focused)).Width(contentWidth)
+	}
+
+	headerOut := borderStyle.Render(fill.Render(header))
+	previewOut := borderStyle.Render(fill.Render(preview))
+	footerOut := borderStyle.Render(fill.Foreground(styles.TextMuted).Render(footer))
+	return []string{headerOut, previewOut, footerOut}
+}
+
+func (m *Model) renderHeader(item cache.ActivityItem, width int) string {
+	glyph := channelGlyph(item.ChannelType)
+	kind := kindLabel(item.Kind)
+	header := kind + "  " + mutedStyle().Render("·") + "  " + glyph + channelNameStyle().Render(item.ChannelName)
+	if item.Unread {
+		header += "  " + unreadDotStyle().Render("●")
+	}
+	return clipToWidth(header, width)
+}
+
+func (m *Model) renderPreview(item cache.ActivityItem, width int) string {
+	preview := messages.RenderSlackMarkdown(item.Text, m.userNames, m.channelNames)
+	preview = strings.ReplaceAll(preview, "\n", " ")
+	previewMax := width - 2
+	if previewMax < 0 {
+		previewMax = 0
+	}
+	return clipToWidth("  "+truncate.StringWithTail(preview, uint(previewMax), "…"), width)
+}
+
+func (m *Model) renderFooter(item cache.ActivityItem, width int) string {
+	actor := m.resolveUser(item.UserID)
+	footer := "  " + actor + " · " + formatRelTime(item.TS)
+	return clipToWidth(footer, width)
+}
+
+func channelGlyph(channelType string) string {
+	switch channelType {
+	case "private":
+		return lipgloss.NewStyle().Foreground(styles.Warning).Render("◆ ")
+	case "dm", "group_dm":
+		return lipgloss.NewStyle().Foreground(styles.TextMuted).Render("● ")
+	default:
+		return "# "
+	}
+}
+
+func kindLabel(kind string) string {
+	switch kind {
+	case "mention":
+		return "Mention"
+	case "thread_reply":
+		return "Thread reply"
+	case "unread":
+		return "Unread"
+	default:
+		return "Activity"
+	}
+}
+
+func (m *Model) resolveUser(uid string) string {
+	if uid == "" {
+		return ""
+	}
+	if uid == m.selfUserID {
+		return "me"
+	}
+	if name, ok := m.userNames[uid]; ok && name != "" {
+		return name
+	}
+	return uid
+}
+
+func formatRelTime(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	secStr := ts
+	if dot := strings.IndexByte(ts, '.'); dot >= 0 {
+		secStr = ts[:dot]
+	}
+	sec, err := strconv.ParseInt(secStr, 10, 64)
+	if err != nil {
+		return ""
+	}
+	d := time.Since(time.Unix(sec, 0))
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return strconv.Itoa(int(d/time.Minute)) + "m ago"
+	case d < 24*time.Hour:
+		return strconv.Itoa(int(d/time.Hour)) + "h ago"
+	default:
+		return strconv.Itoa(int(d/(24*time.Hour))) + "d ago"
+	}
+}
+
+func clipToWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
+		return s
+	}
+	return truncate.StringWithTail(s, uint(width), "…")
+}
+
+func stringMapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		if vb, ok := b[k]; !ok || vb != va {
+			return false
+		}
+	}
+	return true
+}

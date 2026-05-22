@@ -725,6 +725,53 @@ func TestApp_ChannelFinderThreadsRowActivatesThreadsView(t *testing.T) {
 	}
 }
 
+func TestApp_ChannelFinderActivityRowActivatesActivityView(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+	app.channelFinder.Open()
+	app.SetMode(ModeChannelFinder)
+	_ = app.handleChannelFinderMode(tea.KeyPressMsg{Code: tea.KeyDown})
+	cmd := app.handleChannelFinderMode(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from selecting the Activity row, got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(ActivityViewActivatedMsg); !ok {
+		t.Errorf("Enter on synthetic Activity row dispatched %T, want ActivityViewActivatedMsg", msg)
+	}
+}
+
+func TestApp_ActivityViewActivationAndLoad(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+	_, _ = app.Update(ActivityViewActivatedMsg{})
+	if app.view != ViewActivity {
+		t.Fatalf("after activation view = %v, want ViewActivity", app.view)
+	}
+	items := []cache.ActivityItem{{Kind: "mention", ChannelID: "C1", TS: "1.0", Text: "hey", Unread: true}}
+	_, _ = app.Update(ActivityListLoadedMsg{TeamID: "T1", Items: items})
+	if app.sidebar.ActivityUnreadCount() != 1 {
+		t.Fatalf("ActivityUnreadCount = %d, want 1", app.sidebar.ActivityUnreadCount())
+	}
+}
+
+func TestApp_HandleEnterOnActivityRowActivatesView(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+	app.sidebar.SelectActivityRow()
+	if !app.sidebar.IsActivitySelected() {
+		t.Fatalf("precondition: sidebar should select Activity row")
+	}
+	cmd := app.handleEnter()
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd, got nil")
+	}
+	msg := cmd()
+	if _, ok := msg.(ActivityViewActivatedMsg); !ok {
+		t.Errorf("expected ActivityViewActivatedMsg, got %T", msg)
+	}
+}
+
 // TestApp_ClickOnThreadInThreadsViewOpensIt guards Bug B: a left-click
 // on a thread card in the threads-list view must select that card AND
 // open the corresponding thread. Before the fix, the messages-pane
