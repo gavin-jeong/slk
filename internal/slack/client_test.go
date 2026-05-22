@@ -144,6 +144,10 @@ func TestExecuteSlashCommand_PostsChatCommandForm(t *testing.T) {
 		}
 		gotForm = r.Form
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/commands.list" {
+			_, _ = w.Write([]byte(`{"ok":true,"commands":{"/invite":{"name":"/invite","type":"app","app":"A123"}}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
@@ -167,6 +171,12 @@ func TestExecuteSlashCommand_PostsChatCommandForm(t *testing.T) {
 	if gotForm.Get("text") != "@alice" {
 		t.Errorf("text = %q, want @alice", gotForm.Get("text"))
 	}
+	if gotForm.Get("app") != "A123" {
+		t.Errorf("app = %q, want A123", gotForm.Get("app"))
+	}
+	if gotForm.Get("type") != "app" {
+		t.Errorf("type = %q, want app", gotForm.Get("type"))
+	}
 }
 
 func TestExecuteSlashCommand_ReturnsSlackError(t *testing.T) {
@@ -179,6 +189,38 @@ func TestExecuteSlashCommand_ReturnsSlackError(t *testing.T) {
 	c := &Client{token: "xoxc-test", cookie: "d-cookie", apiBaseURL: srv.URL + "/api/"}
 	if err := c.ExecuteSlashCommand(context.Background(), "C1", "/doesnotexist"); err == nil || !strings.Contains(err.Error(), "unknown_command") {
 		t.Fatalf("expected unknown_command error, got %v", err)
+	}
+}
+
+func TestListSlashCommands_ParsesMapResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"commands":{` +
+			`"/zoom":{"description":"Start a Zoom meeting","usage_hint":"meeting topic"},` +
+			`"/incops":{"description":"Incident ops","hint":"declare"},` +
+			`"/bare":null` +
+			`},"cache_ts":"123"}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{token: "xoxc-test", cookie: "d-cookie", apiBaseURL: srv.URL + "/api/"}
+	commands, err := c.ListSlashCommands(context.Background())
+	if err != nil {
+		t.Fatalf("ListSlashCommands: %v", err)
+	}
+
+	byName := map[string]SlashCommand{}
+	for _, cmd := range commands {
+		byName[cmd.Command] = cmd
+	}
+	if byName["/zoom"].Description != "Start a Zoom meeting" {
+		t.Fatalf("/zoom description = %q", byName["/zoom"].Description)
+	}
+	if byName["/incops"].UsageHint != "declare" {
+		t.Fatalf("/incops hint = %q", byName["/incops"].UsageHint)
+	}
+	if _, ok := byName["/bare"]; !ok {
+		t.Fatal("expected null-valued command key to still be included")
 	}
 }
 

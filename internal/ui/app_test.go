@@ -20,6 +20,7 @@ import (
 	"github.com/gammons/slk/internal/ui/compose"
 	"github.com/gammons/slk/internal/ui/messages"
 	"github.com/gammons/slk/internal/ui/sidebar"
+	"github.com/gammons/slk/internal/ui/slashpicker"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
 	"golang.design/x/clipboard"
@@ -333,6 +334,132 @@ func TestHandleInsertMode_BackslashEnterInsertsNewline(t *testing.T) {
 	}
 }
 
+func TestHandleInsertMode_PlainEnterRunsSlashCommand(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.compose.SetValue("/invite @alice")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("plain Enter with slash command should return a command cmd")
+	}
+	msg, ok := cmd().(SlashCommandMsg)
+	if !ok {
+		t.Fatalf("expected SlashCommandMsg, got %T", cmd())
+	}
+	if msg.ChannelID != "C1" || msg.Text != "/invite @alice" {
+		t.Fatalf("unexpected slash command msg: %+v", msg)
+	}
+	if app.compose.Value() != "" {
+		t.Fatalf("expected compose to be reset after slash command, got %q", app.compose.Value())
+	}
+	if app.mode != ModeNormal {
+		t.Fatalf("after slash command, mode = %v, want ModeNormal", app.mode)
+	}
+}
+
+func TestHandleInsertMode_ThreadSlashCommandRunsInChannel(t *testing.T) {
+	app := NewApp()
+	app.activeChannelID = "C1"
+	app.threadPanel.SetThread(messages.MessageItem{TS: "P1"}, nil, "C1", "P1")
+	app.threadVisible = true
+	app.focusedPanel = PanelThread
+	app.SetMode(ModeInsert)
+	app.threadCompose.SetValue("/workflow start")
+
+	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatalf("plain Enter with thread slash command should return a command cmd")
+	}
+	msg, ok := cmd().(SlashCommandMsg)
+	if !ok {
+		t.Fatalf("expected SlashCommandMsg, got %T", cmd())
+	}
+	if msg.ChannelID != "C1" || msg.Text != "/workflow start" {
+		t.Fatalf("unexpected slash command msg: %+v", msg)
+	}
+	if app.threadCompose.Value() != "" {
+		t.Fatalf("expected thread compose to be reset after slash command, got %q", app.threadCompose.Value())
+	}
+	if app.mode != ModeNormal {
+		t.Fatalf("after thread slash command, mode = %v, want ModeNormal", app.mode)
+	}
+}
+
+func TestWorkspaceReadyInitialActiveSetsSlashCommands(t *testing.T) {
+	app := NewApp()
+	msg := WorkspaceReadyMsg{
+		TeamID:        "T1",
+		TeamName:      "test",
+		Channels:      []sidebar.ChannelItem{{ID: "C1", Name: "general", Type: "channel"}},
+		SlashCommands: []slashpicker.Command{{Name: "/workflow", Description: "Run a workflow"}},
+		InitialActive: true,
+	}
+
+	_, _ = app.Update(msg)
+	app.SetMode(ModeInsert)
+	app.focusedPanel = PanelMessages
+	app.compose.Focus()
+	app.compose, _ = app.compose.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+
+	if !app.compose.IsSlashActive() {
+		t.Fatal("expected slash picker to open")
+	}
+	view := app.compose.SlashPickerView(80)
+	if !strings.Contains(view, "/workflow") {
+		t.Fatalf("expected initial workspace slash command in picker, got %q", view)
+	}
+}
+
+func TestWorkspaceUserNamesUpdatedRefreshesMentionPicker(t *testing.T) {
+	app := NewApp()
+	app.activeTeamID = "T1"
+
+	_, _ = app.Update(WorkspaceUserNamesUpdatedMsg{
+		TeamID:    "T1",
+		UserNames: map[string]string{"U1": "alice", "U2": "bob"},
+	})
+
+	users := app.compose.MentionUsers()
+	if len(users) != 2 {
+		t.Fatalf("expected mention picker users refreshed, got %d", len(users))
+	}
+}
+
+func TestAppLearnsExecutedCustomSlashCommand(t *testing.T) {
+	app := NewApp()
+	app.SetSlashCommands([]slashpicker.Command{{Name: "/zoom", Description: "Zoom"}})
+
+	_, _ = app.Update(SlashCommandExecutedMsg{Text: "/incops declare"})
+
+	commands := app.compose.SlashCommands()
+	if len(commands) == 0 || commands[0].Name != "/incops" {
+		t.Fatalf("expected /incops learned at front of picker, got %+v", commands)
+	}
+}
+
+func TestAppViewRendersSlashPicker(t *testing.T) {
+	app := NewApp()
+	app.width = 100
+	app.height = 30
+	app.loading = false
+	app.activeChannelID = "C1"
+	app.focusedPanel = PanelMessages
+	app.SetMode(ModeInsert)
+	app.SetChannels([]sidebar.ChannelItem{{ID: "C1", Name: "general", Type: "channel"}})
+	app.SetSlashCommands([]slashpicker.Command{{Name: "/workflow", Description: "Run a workflow"}})
+	app.compose.SetChannel("general")
+	app.compose.Focus()
+	app.compose, _ = app.compose.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+
+	view := app.View().Content
+	if !strings.Contains(view, "/workflow") {
+		t.Fatalf("expected app view to render slash picker, got %q", view)
+	}
+}
+
 func TestHandleInsertMode_CtrlEnterSends(t *testing.T) {
 	app := NewApp()
 	app.activeChannelID = "C1"
@@ -452,32 +579,6 @@ func TestHandleInsertMode_PlainEnterSends(t *testing.T) {
 	}
 	if app.compose.Value() != "" {
 		t.Fatalf("expected compose to be reset after send, got %q", app.compose.Value())
-	}
-}
-
-func TestHandleInsertMode_PlainEnterRunsSlashCommand(t *testing.T) {
-	app := NewApp()
-	app.activeChannelID = "C1"
-	app.focusedPanel = PanelMessages
-	app.SetMode(ModeInsert)
-	app.compose.SetValue("/invite @alice")
-
-	cmd := app.handleInsertMode(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatalf("plain Enter with slash command should return a command cmd")
-	}
-	msg, ok := cmd().(SlashCommandMsg)
-	if !ok {
-		t.Fatalf("expected SlashCommandMsg, got %T", cmd())
-	}
-	if msg.ChannelID != "C1" || msg.Text != "/invite @alice" {
-		t.Fatalf("unexpected slash command msg: %+v", msg)
-	}
-	if app.compose.Value() != "" {
-		t.Fatalf("expected compose to be reset after slash command, got %q", app.compose.Value())
-	}
-	if app.mode != ModeNormal {
-		t.Fatalf("after slash command, mode = %v, want ModeNormal", app.mode)
 	}
 }
 

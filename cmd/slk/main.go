@@ -641,7 +641,6 @@ func run() error {
 
 	// Cell pixel metrics for sizing decisions.
 	pxW, pxH := imgpkg.CellPixels(int(os.Stdout.Fd()))
-		imgpkg.SetRenderCellPixels(image.Pt(pxW, pxH))
 	debuglog.ImgRender("cell pixels: %dx%d", pxW, pxH)
 
 	// Wire the inline-image pipeline into the messages pane. SendMsg
@@ -853,6 +852,13 @@ func run() error {
 			if err != nil && p != nil {
 				p.Send(ui.ToastMsg{Text: "Status change failed: " + err.Error()})
 			}
+			if p != nil {
+				fresh := make(map[string]string, len(wctx.UserNames))
+				for id, name := range wctx.UserNames {
+					fresh[id] = name
+				}
+				p.Send(ui.WorkspaceUserNamesUpdatedMsg{TeamID: wctx.TeamID, UserNames: fresh})
+			}
 		}()
 	})
 
@@ -1034,7 +1040,7 @@ func run() error {
 				log.Printf("Warning: failed to execute slash command: %v", err)
 				return ui.ToastMsg{Text: "Command failed: " + err.Error()}
 			}
-			return ui.ToastMsg{Text: "Command sent"}
+			return ui.SlashCommandExecutedMsg{Text: text}
 		})
 
 		app.SetMessageEditor(func(channelID, ts, text string) tea.Msg {
@@ -1576,18 +1582,38 @@ func run() error {
 }
 
 func buildSlashPickerCommands(commands []slackclient.SlashCommand) []slashpicker.Command {
-	out := make([]slashpicker.Command, 0, len(commands))
+	out := defaultSlashPickerCommands()
+	seen := make(map[string]int, len(out)+len(commands))
+	for i, cmd := range out {
+		seen[cmd.Name] = i
+	}
 	for _, cmd := range commands {
 		if cmd.Command == "" {
 			continue
 		}
-		out = append(out, slashpicker.Command{
+		candidate := slashpicker.Command{
 			Name:        cmd.Command,
 			Description: cmd.Description,
 			UsageHint:   cmd.UsageHint,
-		})
+		}
+		if idx, ok := seen[candidate.Name]; ok {
+			out[idx] = mergeSlashCommand(out[idx], candidate)
+			continue
+		}
+		seen[candidate.Name] = len(out)
+		out = append(out, candidate)
 	}
 	return out
+}
+
+func mergeSlashCommand(base, candidate slashpicker.Command) slashpicker.Command {
+	if candidate.Description != "" {
+		base.Description = candidate.Description
+	}
+	if candidate.UsageHint != "" {
+		base.UsageHint = candidate.UsageHint
+	}
+	return base
 }
 
 func defaultSlashPickerCommands() []slashpicker.Command {
@@ -1604,6 +1630,7 @@ func defaultSlashPickerCommands() []slashpicker.Command {
 		{Name: "/status", Description: "Set your status", UsageHint: "text"},
 		{Name: "/topic", Description: "Set the channel topic", UsageHint: "text"},
 		{Name: "/who", Description: "See who is in the channel"},
+		{Name: "/zoom", Description: "Start or share a Zoom meeting", UsageHint: "start | meeting topic"},
 	}
 }
 

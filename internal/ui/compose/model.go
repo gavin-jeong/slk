@@ -360,11 +360,11 @@ func (m *Model) SetUploading(on bool) {
 	if m.uploading == on {
 		return
 	}
-		m.uploading = on
-		if on {
-			m.selectedAttachment = -1
-		}
-		m.dirty()
+	m.uploading = on
+	if on {
+		m.selectedAttachment = -1
+	}
+	m.dirty()
 }
 
 // Uploading reports whether an upload is currently in flight.
@@ -1113,6 +1113,10 @@ func (m *Model) SetSlashCommands(commands []slashpicker.Command) {
 	m.commands = commands
 	m.slashPicker.SetCommands(commands)
 	m.dirty()
+}
+
+func (m Model) SlashCommands() []slashpicker.Command {
+	return append([]slashpicker.Command(nil), m.commands...)
 }
 
 func (m Model) IsSlashActive() bool { return m.slashActive }
