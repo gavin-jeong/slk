@@ -2728,7 +2728,7 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// user. `Q` (capital) remains the no-prompt force-quit, and an
 	// already-open quit prompt isn't reopened (Enter confirms, Esc
 	// cancels via the existing confirm-mode handler).
-	if key.Matches(msg, a.keys.Quit) {
+	if key.Matches(normalizeShortcutKeyMsg(msg), a.keys.Quit) {
 		if a.mode != ModeConfirm {
 			a.openQuitConfirm()
 		}
@@ -2898,6 +2898,7 @@ func (a *App) dropStaleStackEntries(stack *navStack, stale []int) {
 }
 
 func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
+	msg = normalizeShortcutKeyMsg(msg)
 	if key.Matches(msg, a.keys.Top) {
 		if a.pendingTopKey {
 			a.pendingTopKey = false
@@ -3228,10 +3229,15 @@ func (a *App) handleInsertMode(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 	}
-	// Plain Enter sends; Shift+Enter (and Ctrl+J as a fallback for terminals
-	// that don't disambiguate modifiers) inserts a newline.
-	isSend := code == tea.KeyEnter && !mod.Contains(tea.ModShift)
-	isNewline := (code == tea.KeyEnter && mod.Contains(tea.ModShift)) ||
+	// Plain Enter sends; modified Enter variants insert a newline.
+	keystroke := msg.Key().Keystroke()
+	stringForm := msg.String()
+	isModifiedEnter := stringForm == "shift+enter" || keystroke == "shift+enter" || stringForm == "shift+return" || keystroke == "shift+return" || stringForm == "alt+enter" || keystroke == "alt+enter" || stringForm == "alt+return" || keystroke == "alt+return"
+	textValue := target.Value()
+	isBackslashEnter := (code == tea.KeyEnter || code == tea.KeyReturn) && strings.HasSuffix(textValue, "\\")
+	isPlainEnter := (code == tea.KeyEnter || code == tea.KeyReturn) && !mod.Contains(tea.ModShift) && !mod.Contains(tea.ModAlt)
+	isSend := isPlainEnter && !isModifiedEnter && !isBackslashEnter
+	isNewline := ((code == tea.KeyEnter || code == tea.KeyReturn) && (mod.Contains(tea.ModShift) || mod.Contains(tea.ModAlt))) || isModifiedEnter || isBackslashEnter ||
 		(code == 'j' && mod == tea.ModCtrl)
 
 	// Determine which compose box is active based on focused panel
@@ -3471,6 +3477,9 @@ func (a *App) handleThemeSwitcherMode(msg tea.KeyMsg) tea.Cmd {
 // handleHelpMode dispatches key events to the help overlay and tears down
 // the mode when the overlay closes itself (esc/q/?).
 func (a *App) handleHelpMode(msg tea.KeyMsg) tea.Cmd {
+	if !a.help.IsSearching() {
+		msg = normalizeShortcutKeyMsg(msg)
+	}
 	keyStr := msg.String()
 	switch msg.Key().Code {
 	case tea.KeyEnter:
@@ -3648,6 +3657,7 @@ func (a *App) handleReactionPickerMode(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (a *App) handleConfirmMode(msg tea.KeyMsg) tea.Cmd {
+	msg = normalizeShortcutKeyMsg(msg)
 	keyStr := msg.String()
 	switch msg.Key().Code {
 	case tea.KeyEscape:
