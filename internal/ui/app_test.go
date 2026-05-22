@@ -14,7 +14,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	imgpkg "github.com/gammons/slk/internal/image"
 	"github.com/gammons/slk/internal/ui/compose"
@@ -22,6 +21,7 @@ import (
 	"github.com/gammons/slk/internal/ui/sidebar"
 	"github.com/gammons/slk/internal/ui/statusbar"
 	"github.com/gammons/slk/internal/ui/styles"
+	"golang.design/x/clipboard"
 )
 
 func TestAppFocusCycle(t *testing.T) {
@@ -2347,6 +2347,49 @@ func TestHandleInsertMode_Up_OnSecondLine_ForwardsToTextarea(t *testing.T) {
 
 	if !app.compose.CursorAtFirstLine() {
 		t.Error("expected cursor moved to first line via standard Up")
+	}
+}
+
+func TestNormalMode_KoreanKeyboardJMovesDown(t *testing.T) {
+	app := NewApp()
+	app.focusedPanel = PanelSidebar
+	app.sidebar.SetItems([]sidebar.ChannelItem{
+		{ID: "C1", Name: "general", Type: "channel"},
+		{ID: "C2", Name: "random", Type: "channel"},
+	})
+	app.sidebar.SelectByID("C1")
+
+	app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅓ', Text: "ㅓ"})
+
+	if got := app.sidebar.SelectedID(); got != "C2" {
+		t.Fatalf("Korean keyboard j should move down; selected ID = %q", got)
+	}
+}
+
+func TestNormalMode_KoreanKeyboardShiftQOpensConfirmPrompt(t *testing.T) {
+	app := NewApp()
+
+	cmd := app.handleNormalMode(tea.KeyPressMsg{Code: 'ㅃ', Text: "ㅃ"})
+	if cmd != nil {
+		if _, ok := cmd().(tea.QuitMsg); ok {
+			t.Fatal("Korean keyboard Q should open confirm prompt, not quit immediately")
+		}
+	}
+	if !app.confirmPrompt.IsVisible() {
+		t.Fatal("Korean keyboard Q should open the confirm prompt")
+	}
+	if app.mode != ModeConfirm {
+		t.Errorf("expected mode=ModeConfirm, got %v", app.mode)
+	}
+}
+
+func TestShortcutNormalization_KoreanTextMapsOnlyWhenRequested(t *testing.T) {
+	msg := tea.KeyPressMsg{Code: 'ㅑ', Text: "ㅑ"}
+	if got := msg.String(); got != "ㅑ" {
+		t.Fatalf("precondition: raw key string = %q", got)
+	}
+	if got := normalizeShortcutKeyMsg(msg).String(); got != "i" {
+		t.Fatalf("normalized Korean keyboard i = %q, want i", got)
 	}
 }
 

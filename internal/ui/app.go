@@ -19,7 +19,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"golang.design/x/clipboard"
 	"github.com/gammons/slk/internal/cache"
 	"github.com/gammons/slk/internal/config"
 	"github.com/gammons/slk/internal/debuglog"
@@ -44,6 +43,7 @@ import (
 	"github.com/gammons/slk/internal/ui/threadsview"
 	"github.com/gammons/slk/internal/ui/workspace"
 	"github.com/gammons/slk/internal/ui/workspacefinder"
+	"golang.design/x/clipboard"
 )
 
 type Panel int
@@ -349,7 +349,7 @@ type (
 		UserID      string
 		WorkspaceID string
 	}
-	TypingExpiredMsg struct{}
+	TypingExpiredMsg  struct{}
 	PresenceChangeMsg struct {
 		UserID   string
 		Presence string
@@ -725,10 +725,10 @@ type App struct {
 	keys           KeyMap
 
 	// Cached layout widths for mouse hit-testing
-	layoutRailWidth    int
-	layoutSidebarEnd   int // railWidth + sidebarWidth + sidebarBorder
-	layoutMsgEnd       int // layoutSidebarEnd + msgWidth + msgBorder
-	layoutThreadEnd    int // layoutMsgEnd + threadWidth + threadBorder
+	layoutRailWidth  int
+	layoutSidebarEnd int // railWidth + sidebarWidth + sidebarBorder
+	layoutMsgEnd     int // layoutSidebarEnd + msgWidth + msgBorder
+	layoutThreadEnd  int // layoutMsgEnd + threadWidth + threadBorder
 	// Cached pane content heights, used for page-up/down distance calculations.
 	layoutMsgHeight     int
 	layoutSidebarHeight int
@@ -774,11 +774,11 @@ type App struct {
 	// always).
 	channelSyncedAtReader func(channelID string) int64
 	olderMessagesFetcher  OlderMessagesFetchFunc
-	messageSender        MessageSendFunc
-	messageEditor        MessageEditFunc
-	messageDeleter       MessageDeleteFunc
-	messageMarkUnreader  MarkUnreadFunc
-	uploader             UploadFunc
+	messageSender         MessageSendFunc
+	messageEditor         MessageEditFunc
+	messageDeleter        MessageDeleteFunc
+	messageMarkUnreader   MarkUnreadFunc
+	uploader              UploadFunc
 
 	// clipboardAvailable is set at startup based on the result of
 	// clipboard.Init(). When false, Ctrl+V smart-paste is a no-op.
@@ -788,18 +788,18 @@ type App struct {
 	// clipboard contents. Tests inject fakes via SetClipboardReader.
 	clipboardRead clipboardReader
 
-	threadFetcher        ThreadFetchFunc
-	threadCacheReader    ThreadCacheReadFunc
-	threadMarker         ThreadMarkFunc
-	threadReplySender    ThreadReplySendFunc
-	channelJoiner        JoinChannelFunc
-	threadsListFetcher   ThreadsListFetchFunc
+	threadFetcher      ThreadFetchFunc
+	threadCacheReader  ThreadCacheReadFunc
+	threadMarker       ThreadMarkFunc
+	threadReplySender  ThreadReplySendFunc
+	channelJoiner      JoinChannelFunc
+	threadsListFetcher ThreadsListFetchFunc
 	// channelLastReadFetcher returns the parent channel's last_read_ts
 	// so the thread panel can render a "── new ──" boundary. Optional —
 	// when nil, the thread panel renders without an unread boundary.
 	channelLastReadFetcher func(channelID string) string
-	threadsDirtyDebounce time.Duration
-	fetchingOlder        bool
+	threadsDirtyDebounce   time.Duration
+	fetchingOlder          bool
 
 	// Cached user-id -> display-name map (mirror of what SetUserNames
 	// last received). Used by openSelectedThreadCmd to populate the
@@ -1007,36 +1007,36 @@ func previewSpinnerTickCmd() tea.Cmd {
 
 func NewApp() *App {
 	app := &App{
-		workspaceRail:        workspace.New(nil, 0),
-		sidebar:              sidebar.New(nil),
-		messagepane:          messages.New(nil, ""),
-		compose:              compose.New(""),
-		statusbar:            statusbar.New(),
-		channelFinder:        channelfinder.New(),
-		workspaceFinder:      workspacefinder.New(),
-		themeSwitcher:        themeswitcher.New(),
-		presenceMenu:         presencemenu.New(),
-		help:                 help.New(),
-		threadPanel:          thread.New(),
-		threadCompose:        compose.New("thread"),
-		threadsView:          threadsview.New(nil, ""),
-		reactionPicker:       reactionpicker.New(),
-		confirmPrompt:        confirmprompt.New(),
-		mode:                 ModeNormal,
-		focusedPanel:         PanelSidebar,
-		sidebarVisible:       true,
-		view:                 ViewChannels,
-		keys:                 DefaultKeyMap(),
-		typingUsers:          make(map[string]map[string]time.Time),
-		selfSentTSes:         make(map[string]time.Time),
+		workspaceRail:         workspace.New(nil, 0),
+		sidebar:               sidebar.New(nil),
+		messagepane:           messages.New(nil, ""),
+		compose:               compose.New(""),
+		statusbar:             statusbar.New(),
+		channelFinder:         channelfinder.New(),
+		workspaceFinder:       workspacefinder.New(),
+		themeSwitcher:         themeswitcher.New(),
+		presenceMenu:          presencemenu.New(),
+		help:                  help.New(),
+		threadPanel:           thread.New(),
+		threadCompose:         compose.New("thread"),
+		threadsView:           threadsview.New(nil, ""),
+		reactionPicker:        reactionpicker.New(),
+		confirmPrompt:         confirmprompt.New(),
+		mode:                  ModeNormal,
+		focusedPanel:          PanelSidebar,
+		sidebarVisible:        true,
+		view:                  ViewChannels,
+		keys:                  DefaultKeyMap(),
+		typingUsers:           make(map[string]map[string]time.Time),
+		selfSentTSes:          make(map[string]time.Time),
 		lastSelfSendByChannel: make(map[string]time.Time),
-		threadsDirtyDebounce: 150 * time.Millisecond,
-		userNames:            map[string]string{},
-		externalUsers:        map[string]bool{},
-		statusByTeam:         map[string]workspaceStatus{},
-		lastChannelByTeam:    map[string]string{},
-		navHistory:           make(map[string]*navStack),
-		clipboardRead:        defaultClipboardReader,
+		threadsDirtyDebounce:  150 * time.Millisecond,
+		userNames:             map[string]string{},
+		externalUsers:         map[string]bool{},
+		statusByTeam:          map[string]workspaceStatus{},
+		lastChannelByTeam:     map[string]string{},
+		navHistory:            make(map[string]*navStack),
+		clipboardRead:         defaultClipboardReader,
 	}
 	// Seed the picker with built-in emojis so the autocomplete works even
 	// before the first workspace finishes loading customs.
@@ -2709,7 +2709,7 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// user. `Q` (capital) remains the no-prompt force-quit, and an
 	// already-open quit prompt isn't reopened (Enter confirms, Esc
 	// cancels via the existing confirm-mode handler).
-	if key.Matches(msg, a.keys.Quit) {
+	if key.Matches(normalizeShortcutKeyMsg(msg), a.keys.Quit) {
 		if a.mode != ModeConfirm {
 			a.openQuitConfirm()
 		}
@@ -2879,6 +2879,7 @@ func (a *App) dropStaleStackEntries(stack *navStack, stale []int) {
 }
 
 func (a *App) handleNormalMode(msg tea.KeyMsg) tea.Cmd {
+	msg = normalizeShortcutKeyMsg(msg)
 	// Reaction-nav sub-state (intercept before normal keys)
 	if a.focusedPanel == PanelMessages && a.messagepane.ReactionNavActive() {
 		return a.handleReactionNav(msg)
@@ -3411,6 +3412,9 @@ func (a *App) handleThemeSwitcherMode(msg tea.KeyMsg) tea.Cmd {
 // handleHelpMode dispatches key events to the help overlay and tears down
 // the mode when the overlay closes itself (esc/q/?).
 func (a *App) handleHelpMode(msg tea.KeyMsg) tea.Cmd {
+	if !a.help.IsSearching() {
+		msg = normalizeShortcutKeyMsg(msg)
+	}
 	keyStr := msg.String()
 	switch msg.Key().Code {
 	case tea.KeyEnter:
@@ -3588,6 +3592,7 @@ func (a *App) handleReactionPickerMode(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (a *App) handleConfirmMode(msg tea.KeyMsg) tea.Cmd {
+	msg = normalizeShortcutKeyMsg(msg)
 	keyStr := msg.String()
 	switch msg.Key().Code {
 	case tea.KeyEscape:
